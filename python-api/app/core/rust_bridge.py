@@ -2,9 +2,9 @@
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
 from typing import Optional
 import logging
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +12,8 @@ _executor = ThreadPoolExecutor(max_workers=8)
 _index_manager: Optional["PyIndexManager"] = None
 
 try:
-    from rust_core import PyIndexManager, PySearchEngine, PyIngestionEngine, PyOntologyValidator
+    # IndexManager is exported as "IndexManager" by PyO3 (not "PyIndexManager")
+    from rust_core import IndexManager as PyIndexManager, PySearchEngine, PyIngestionEngine, PyOntologyValidator
     RUST_AVAILABLE = True
 except ImportError as e:
     logger.warning(f"Rust core not available: {e}. Using fallback implementations.")
@@ -63,7 +64,34 @@ async def rust_search_async(collection_id: str, embedding: list[float], limit: i
         )
         return results
     except Exception as e:
-        logger.error(f"Rust search error: {e}")
+        logger.error(f"Rust vector search error: {e}")
+        return []
+
+
+async def rust_keyword_search_async(collection_id: str, query: str, limit: int) -> list[dict]:
+    im = get_index_manager()
+    if im is None:
+        return []
+
+    loop = asyncio.get_event_loop()
+    try:
+        results_json = await loop.run_in_executor(
+            _executor,
+            lambda: im.text_search(collection_id, query, limit),
+        )
+        results = json.loads(results_json)
+        return [
+            {
+                "id": r.get("id", ""),
+                "doc_id": r.get("doc_id", ""),
+                "text": r.get("text", ""),
+                "collection_id": collection_id,
+                "keyword_score": 1.0,
+            }
+            for r in results
+        ]
+    except Exception as e:
+        logger.error(f"Rust keyword search error: {e}")
         return []
 
 

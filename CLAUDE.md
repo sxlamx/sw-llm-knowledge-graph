@@ -1,8 +1,8 @@
 # Claude Instructions
 
-## Before Starting Any Coding Task
+## At the Start of Every Session
 
-Read [tasks/LESSONS.md](tasks/LESSONS.md) before writing or modifying any code.
+Read [tasks/LESSONS.md](tasks/LESSONS.md) at the beginning of every conversation, and again before writing or modifying any code.
 This file contains past mistakes and corrections — apply the rules there to avoid repeating them.
 
 ## Project Overview

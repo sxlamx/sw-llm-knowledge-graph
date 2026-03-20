@@ -57,6 +57,9 @@ class Settings(BaseSettings):
         return [p.strip() for p in self.allowed_folder_roots.split(",") if p.strip()]
     max_file_size_mb: int = 100
 
+    # Phase 2 features (disabled by default in Phase 1)
+    enable_contextual_prefix: bool = False
+
     # Rate limiting
     rate_limit_per_user: int = 60
     rate_limit_window_seconds: int = 60

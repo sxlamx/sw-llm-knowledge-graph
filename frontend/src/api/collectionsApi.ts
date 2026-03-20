@@ -1,21 +1,5 @@
 import { api } from './baseApi';
-
-export interface Collection {
-  id: string;
-  name: string;
-  description?: string;
-  folder_path?: string;
-  status: string;
-  doc_count: number;
-  created_at?: string;
-  updated_at?: string;
-}
-
-export interface CollectionCreate {
-  name: string;
-  description?: string;
-  folder_path?: string;
-}
+import type { Collection, CollectionCreate } from '../types/api';
 
 export const collectionsApi = api.injectEndpoints({
   endpoints: (builder) => ({
@@ -25,7 +9,7 @@ export const collectionsApi = api.injectEndpoints({
     }),
     getCollection: builder.query<Collection, string>({
       query: (id) => `/collections/${id}`,
-      providesTags: (_result, _error, id) => [{ type: 'Collection', id }],
+      providesTags: (_r, _e, id) => [{ type: 'Collection', id }],
     }),
     createCollection: builder.mutation<Collection, CollectionCreate>({
       query: (body) => ({ url: '/collections', method: 'POST', body }),

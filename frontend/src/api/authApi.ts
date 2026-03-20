@@ -1,27 +1,20 @@
 import { api } from './baseApi';
-
-export interface AuthResponse {
-  access_token: string;
-  user: {
-    id: string;
-    email: string;
-    name: string;
-    picture?: string;
-  };
-}
+import type { AuthResponse } from '../types/api';
 
 export const authApi = api.injectEndpoints({
   endpoints: (builder) => ({
-    googleLogin: builder.mutation<AuthResponse, { id_token: string }>({
-      query: (body) => ({ url: '/auth/google', method: 'POST', body }),
+    googleLogin: builder.mutation<AuthResponse, { token: string }>({
+      query: (body) => ({
+        url: '/auth/google',
+        method: 'POST',
+        body,
+      }),
     }),
-    refresh: builder.mutation<{ access_token: string }, void>({
-      query: () => ({ url: '/auth/refresh', method: 'POST' }),
-    }),
-    logoutUser: builder.mutation<void, void>({
+    logout: builder.mutation<void, void>({
       query: () => ({ url: '/auth/logout', method: 'POST' }),
+      invalidatesTags: ['Collection', 'IngestJob', 'Document'],
     }),
   }),
 });
 
-export const { useGoogleLoginMutation, useRefreshMutation, useLogoutUserMutation } = authApi;
+export const { useGoogleLoginMutation, useLogoutMutation } = authApi;
