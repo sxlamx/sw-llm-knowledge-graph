@@ -1,0 +1,58 @@
+[package]
+name = "rust-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rust_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+pyo3-build-config = "0.22"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+rayon = "1"
+petgraph = "0.6"
+tantivy = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+blake3 = "1"
+notify = "6"
+walkdir = "2"
+text-splitter = { version = "0.14", features = ["tiktoken-rs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+metrics = "0.22"
+metrics-exporter-prometheus = "0.13"
+lru = "0.12"
+dashmap = "5"
+parking_lot = "0.12"
+thiserror = "1"
+anyhow = "1"
+strsim = "0.11"
+ordered-float = "4"
+lopdf = "0.32"
+docx-rs = "0.4"
+scraper = "0.19"
+pulldown-cmark = "0.11"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+
+[build-dependencies]
+pyo3-build-config = "0.22"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tempfile = "3"
+rand = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 1

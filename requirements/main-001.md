@@ -1,0 +1,1 @@
+ i want to build a production ready rust based LLM powered knowledge graph builder.  The application will allow ontology maintenance, build knowledge graph against multiple collections of documents by leveraging on LLMs.  It must be able to ingest large documents.  Contextual chunking to support indexing these large documents.  break down chunks with overlapping pages.  

@@ -1,0 +1,21 @@
+FROM python:3.12-slim AS api
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y libssl-dev curl git && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir maturin
+
+COPY rust-core/ /build/rust-core/
+WORKDIR /build/rust-core
+RUN maturin build --release --strip
+WORKDIR /app
+
+RUN pip install --no-cache-dir /build/rust-core/target/wheels/*.whl
+
+COPY python-api/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY python-api/ .
+
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

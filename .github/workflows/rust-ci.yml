@@ -1,0 +1,36 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [main]
+    paths: ['rust-core/**']
+  pull_request:
+    paths: ['rust-core/**']
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-core
+
+      - name: Check formatting
+        run: cd rust-core && cargo fmt --check
+
+      - name: Run clippy
+        run: cd rust-core && cargo clippy --all-features -- -D warnings
+
+      - name: Run tests
+        run: cd rust-core && cargo test --all-features -- --test-threads=4
+
+      - name: Build
+        run: cd rust-core && cargo build --release
