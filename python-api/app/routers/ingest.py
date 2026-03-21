@@ -3,6 +3,7 @@
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from app.auth.middleware import get_current_user
+from app.core.path_sanitizer import validate_folder_path
 from app.db.lancedb_client import (
     create_ingest_job, get_ingest_job, update_ingest_job,
     list_ingest_jobs, get_collection,
@@ -30,6 +31,10 @@ async def start_ingest_job(
 
     if collection.get("user_id") != current_user["id"]:
         raise HTTPException(status_code=403, detail="Access denied")
+
+    # Sanitize and validate the folder path before starting any work
+    safe_path = validate_folder_path(body.folder_path)
+    body = body.model_copy(update={"folder_path": str(safe_path)})
 
     job_id = str(uuid.uuid4())
     job_data = {

@@ -46,6 +46,18 @@ class Settings(BaseSettings):
     rate_limit_per_user: int = 60
     rate_limit_window_seconds: int = 60
 
+    # Multimodal (vision captions for PDF images)
+    vision_model: str = "gpt-4o-mini"          # OpenAI vision model for image captions
+    vision_enabled: bool = True                 # Set False to skip image extraction
+    vision_max_pages: int = 50                  # Max pages to extract images from per PDF
+    vision_image_dpi: int = 72                  # Resolution for page renders (lower = faster)
+
+    # Drive webhook
+    drive_webhook_url: str = ""                 # Public HTTPS URL for Drive push notifications
+
+    # Fine-tuning
+    openai_api_key: str = ""                    # Required for fine-tuning API
+
     # Logging
     rust_log: str = "info"
 

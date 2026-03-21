@@ -1,9 +1,18 @@
 //! Search storage layer using Tantivy for full-text search.
-//! Vector storage is handled by LanceDB Python SDK.
+//!
+//! Phase 3 batch-committer design:
+//!   - `insert_chunks` stages documents into the Tantivy writer **without committing**.
+//!   - `commit_pending` flushes staged docs; returns `true` if a commit was actually issued.
+//!   - `pending_doc_count` exposes how many staged but un-committed documents are buffered.
+//!   - The caller (IndexManager::flush_tantivy) is responsible for periodic commits;
+//!     Python startup wires this up as an asyncio task every 500 ms.
 
 use crate::errors::CoreError;
 use crate::models::ChunkRecord;
-use std::sync::{Arc, RwLock};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, RwLock,
+};
 use tantivy::{
     collector::TopDocs,
     directory::MmapDirectory,
@@ -21,6 +30,8 @@ pub struct SearchEngine {
     collection_id_field: Field,
     text_field: Field,
     doc_id_field: Field,
+    /// Monotonically increasing count of staged-but-uncommitted documents.
+    pending_doc_count: Arc<AtomicU64>,
 }
 
 impl SearchEngine {
@@ -55,12 +66,21 @@ impl SearchEngine {
             collection_id_field,
             text_field,
             doc_id_field,
+            pending_doc_count: Arc::new(AtomicU64::new(0)),
         })
     }
 
+    /// Stage `chunks` into the Tantivy writer without committing.
+    ///
+    /// Returns the number of staged documents.  The caller is responsible for
+    /// calling [`commit_pending`] either explicitly or via the batch committer.
     pub fn insert_chunks(&self, chunks: Vec<ChunkRecord>) -> Result<usize, CoreError> {
         let count = chunks.len();
-        let mut writer = self.writer.write().map_err(|e| CoreError::StorageError(format!("Lock error: {}", e)))?;
+        let mut writer = self
+            .writer
+            .write()
+            .map_err(|e| CoreError::StorageError(format!("Lock error: {}", e)))?;
+
         for chunk in chunks {
             writer
                 .add_document(doc!(
@@ -71,10 +91,38 @@ impl SearchEngine {
                 ))
                 .map_err(|e| CoreError::StorageError(e.to_string()))?;
         }
+
+        // Track staged-but-uncommitted docs; do NOT commit here.
+        self.pending_doc_count.fetch_add(count as u64, Ordering::Release);
+        Ok(count)
+    }
+
+    /// Flush all staged documents to the Tantivy index.
+    ///
+    /// Returns `true` if there were pending documents and a commit was issued,
+    /// `false` if there was nothing to commit.
+    pub fn commit_pending(&self) -> Result<bool, CoreError> {
+        let pending = self.pending_doc_count.load(Ordering::Acquire);
+        if pending == 0 {
+            return Ok(false);
+        }
+
+        let mut writer = self
+            .writer
+            .write()
+            .map_err(|e| CoreError::StorageError(format!("Lock error: {}", e)))?;
+
         writer
             .commit()
             .map_err(|e| CoreError::StorageError(e.to_string()))?;
-        Ok(count)
+
+        self.pending_doc_count.store(0, Ordering::Release);
+        Ok(true)
+    }
+
+    /// How many staged documents are waiting for the next commit.
+    pub fn pending_doc_count(&self) -> u64 {
+        self.pending_doc_count.load(Ordering::Relaxed)
     }
 
     pub fn search(

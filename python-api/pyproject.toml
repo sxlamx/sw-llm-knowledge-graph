@@ -19,13 +19,30 @@ dependencies = [
     "tiktoken>=0.7",
     "rust-core",
     "lancedb>=0.9",
+    "prometheus_client>=0.20",
+    "openai>=1.40",
+    "Pillow>=10.0",
 ]
+
+[project.optional-dependencies.multimodal]
+# Install for image extraction from PDFs
+# pdfium2 ships libpdfium as a wheel — no system libs needed on most platforms
+dependencies = ["pdfium2>=8.0"]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
+    "respx>=0.21",
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--cov=app --cov-report=term-missing --cov-fail-under=80"
+
+[tool.coverage.run]
+omit = ["tests/*", "app/core/rust_bridge.py"]

@@ -1,0 +1,97 @@
+version: "3.9"
+
+# ---------------------------------------------------------------------------
+# Knowledge Graph Builder — production Docker Compose
+#
+# Quick start:
+#   cp .env.example .env          # fill in API keys and secrets
+#   bash scripts/generate_jwt_keys.sh
+#   docker compose up --build -d
+#
+# Services  : python-api (8000) · frontend (3000)
+# Volumes   : lancedb_data · documents
+# ---------------------------------------------------------------------------
+
+services:
+
+  # --------------------------------------------------------------------------
+  # Python FastAPI + Rust core
+  # --------------------------------------------------------------------------
+  python-api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    image: kg-api:latest
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - lancedb_data:/data/lancedb
+      - documents:/data/documents
+      - ./secrets:/run/secrets:ro
+    environment:
+      # LLM (Ollama Cloud)
+      OLLAMA_CLOUD_BASE_URL: ${OLLAMA_CLOUD_BASE_URL:-https://api.ollama.com/v1}
+      OLLAMA_CLOUD_API_KEY: ${OLLAMA_CLOUD_API_KEY}
+      OLLAMA_CLOUD_MODEL: ${OLLAMA_CLOUD_MODEL:-llama3.2}
+      # Embeddings (local Ollama reachable from container)
+      OLLAMA_EMBED_BASE_URL: ${OLLAMA_EMBED_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-qwen3-embedding}
+      OLLAMA_EMBED_DIMENSIONS: ${OLLAMA_EMBED_DIMENSIONS:-1536}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1536}
+      # Storage
+      LANCEDB_PATH: /data/lancedb
+      DOCUMENTS_PATH: /data/documents
+      ALLOWED_FOLDER_ROOTS: /data/documents
+      # Google OAuth
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      # JWT
+      JWT_PRIVATE_KEY_PATH: /run/secrets/jwt_private_key.pem
+      JWT_PUBLIC_KEY_PATH: /run/secrets/jwt_public_key.pem
+      JWT_EXPIRY_MINUTES: ${JWT_EXPIRY_MINUTES:-10}
+      JWT_REFRESH_EXPIRY_DAYS: ${JWT_REFRESH_EXPIRY_DAYS:-7}
+      # CORS
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
+      # Multimodal (PDF image extraction)
+      VISION_MODEL: ${VISION_MODEL:-gpt-4o-mini}
+      VISION_ENABLED: ${VISION_ENABLED:-true}
+      VISION_MAX_PAGES: ${VISION_MAX_PAGES:-50}
+      VISION_IMAGE_DPI: ${VISION_IMAGE_DPI:-72}
+      # OpenAI (fine-tuning)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Drive push notifications
+      DRIVE_WEBHOOK_URL: ${DRIVE_WEBHOOK_URL:-}
+      # Logging
+      RUST_LOG: ${RUST_LOG:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # --------------------------------------------------------------------------
+  # React SPA — nginx static server with API reverse proxy
+  # --------------------------------------------------------------------------
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+      args:
+        VITE_API_BASE_URL: /api/v1
+        VITE_WS_BASE_URL: ""
+        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
+    image: kg-frontend:latest
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      python-api:
+        condition: service_healthy
+
+volumes:
+  lancedb_data:
+  documents:

@@ -1,21 +1,46 @@
-FROM python:3.12-slim AS api
-WORKDIR /app
+# ---- Stage 1: Rust build ----
+FROM rust:1.82-slim AS rust-builder
 
-RUN apt-get update && apt-get install -y libssl-dev curl git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y \
+    python3 python3-pip python3-venv \
+    libssl-dev pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir maturin
+RUN pip3 install --no-cache-dir maturin --break-system-packages
 
 COPY rust-core/ /build/rust-core/
 WORKDIR /build/rust-core
-RUN maturin build --release --strip
+
+# maturin build produces a .whl in target/wheels/
+RUN maturin build --release --strip --out /build/wheels
+
+# ---- Stage 2: Python API ----
+FROM python:3.12-slim AS api
+
+# pdfium-binary ships its own libpdfium; poppler-utils needed for fallback
+RUN apt-get update && apt-get install -y \
+    libssl-dev curl libglib2.0-0 libgomp1 \
+    poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-RUN pip install --no-cache-dir /build/rust-core/target/wheels/*.whl
+# Install the compiled Rust wheel
+COPY --from=rust-builder /build/wheels/*.whl /tmp/wheels/
+RUN pip install --no-cache-dir /tmp/wheels/*.whl && rm -rf /tmp/wheels
 
-COPY python-api/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies
+COPY python-api/pyproject.toml /app/
+RUN pip install --no-cache-dir ".[dev,multimodal]" || pip install --no-cache-dir ".[multimodal]"
 
-COPY python-api/ .
+COPY python-api/ /app/
+
+# Create directories expected at runtime
+RUN mkdir -p /data/lancedb /data/documents /run/secrets
 
 EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

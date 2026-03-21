@@ -8,6 +8,7 @@ from app.models.schemas import (
 from app.llm.embedder import embed_texts
 from app.core.rust_bridge import get_index_manager
 from app.core.search_service import hybrid_search
+from app.core.metrics import KG_SEARCH_REQUESTS_TOTAL, KG_SEARCH_LATENCY
 import time
 import logging
 
@@ -36,7 +37,10 @@ async def search(
         logger.error(f"Search error: {e}")
         results = []
 
-    elapsed_ms = int((time.time() - start) * 1000)
+    elapsed = time.time() - start
+    elapsed_ms = int(elapsed * 1000)
+    KG_SEARCH_REQUESTS_TOTAL.labels(mode=body.mode).inc()
+    KG_SEARCH_LATENCY.observe(elapsed)
 
     return SearchResponse(
         results=[

@@ -7,15 +7,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, REGISTRY
 import asyncio
 import time
 import os
 
 from app.config import get_settings
-from app.core.rust_bridge import get_index_manager
+from app.core.rust_bridge import get_index_manager, _tantivy_commit_loop
+from app.core.metrics import KG_PENDING_WRITES, KG_INDEX_STATE, KG_CONCURRENT_SEARCHES
 from app.db.lancedb_client import get_lancedb, init_system_tables
 from app.auth.middleware import auth_middleware, rate_limit_middleware
 from app.routers import auth, collections, ingest, search, documents
+from app.routers import graph, ontology, topics
+from app.routers import drive, analytics, agent, finetune
+from app.routers.ws import router as ws_router
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -37,7 +42,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"LanceDB init warning (may not be critical): {e}")
 
+    # Phase 3: start Tantivy batch-commit background task (500 ms interval).
+    commit_task = asyncio.create_task(_tantivy_commit_loop(interval_seconds=0.5))
+
     yield
+
+    commit_task.cancel()
+    try:
+        await commit_task
+    except asyncio.CancelledError:
+        pass
 
     logger.info("Shutting down Knowledge Graph API...")
 
@@ -69,6 +83,14 @@ app.include_router(collections.router, prefix="/api/v1/collections", tags=["coll
 app.include_router(ingest.router, prefix="/api/v1/ingest", tags=["ingest"])
 app.include_router(search.router, prefix="/api/v1/search", tags=["search"])
 app.include_router(documents.router, prefix="/api/v1/documents", tags=["documents"])
+app.include_router(graph.router, prefix="/api/v1/graph", tags=["graph"])
+app.include_router(ontology.router, prefix="/api/v1/ontology", tags=["ontology"])
+app.include_router(topics.router, prefix="/api/v1/topics", tags=["topics"])
+app.include_router(drive.router, prefix="/api/v1/drive", tags=["drive"])
+app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
+app.include_router(agent.router, prefix="/api/v1/agent", tags=["agent"])
+app.include_router(finetune.router, prefix="/api/v1/finetune", tags=["finetune"])
+app.include_router(ws_router, tags=["websocket"])
 
 
 @app.get("/health")
@@ -111,26 +133,15 @@ async def api_health():
 async def metrics():
     try:
         im = get_index_manager()
-        pending = im.pending_writes_count()
-        permits = im.available_search_permits()
-        state = im.get_state()
+        KG_PENDING_WRITES.set(im.pending_writes_count())
+        KG_INDEX_STATE.set(im.get_state())
+        available = im.available_search_permits()
+        # search_semaphore capacity is 100; slots in use = capacity - available
+        KG_CONCURRENT_SEARCHES.set(max(0, 100 - available))
     except Exception:
-        pending = 0
-        permits = 100
-        state = "unknown"
+        pass  # metrics best-effort; don't fail health checks
 
-    lines = [
-        "# HELP kg_index_state Index state (0=uninitialized, 1=building, 2=active, 3=compacting, 4=degraded)",
-        "# TYPE kg_index_state gauge",
-        f"kg_index_state {state}",
-        "# HELP kg_index_pending_writes Vectors written since last compaction",
-        "# TYPE kg_index_pending_writes gauge",
-        f"kg_index_pending_writes {pending}",
-        "# HELP kg_search_available_permits Available search semaphore permits",
-        "# TYPE kg_search_available_permits gauge",
-        f"kg_search_available_permits {permits}",
-    ]
-    return Response(content="\n".join(lines), media_type="text/plain")
+    return Response(content=generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.middleware("http")

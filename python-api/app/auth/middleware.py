@@ -25,47 +25,69 @@ NO_AUTH_PATHS = {
 }
 
 
+_RATE_LIMIT_EXEMPT = NO_AUTH_PATHS | {"/metrics"}
+
+
 class RateLimiter:
-    def __init__(self, per_user_limit: int = 60, window_seconds: int = 60):
+    """Sliding-window rate limiter (in-memory; for multi-replica use Redis instead)."""
+
+    def __init__(self, per_user_limit: int = 60, per_ip_limit: int = 200, window_seconds: int = 60):
         self.per_user_limit = per_user_limit
+        self.per_ip_limit = per_ip_limit
         self.window = window_seconds
-        self.user_counts: dict[str, list[float]] = defaultdict(list)
-        self._lock = None
+        self._counts: dict[str, list[float]] = defaultdict(list)
 
-    async def check(self, user_id: str) -> bool:
+    def _check(self, key: str, limit: int) -> bool:
         now = time.time()
         window_start = now - self.window
-        self.user_counts[user_id] = [t for t in self.user_counts[user_id] if t > window_start]
-        if len(self.user_counts[user_id]) >= self.per_user_limit:
+        hits = self._counts[key]
+        # Evict expired entries
+        while hits and hits[0] <= window_start:
+            hits.pop(0)
+        if len(hits) >= limit:
             return False
-        self.user_counts[user_id].append(now)
+        hits.append(now)
         return True
 
-    async def check_ip(self, ip: str) -> bool:
-        now = time.time()
-        window_start = now - self.window
-        self.user_counts[ip] = [t for t in self.user_counts[ip] if t > window_start]
-        if len(self.user_counts[ip]) >= self.per_user_limit * 3:
-            return False
-        self.user_counts[ip].append(now)
-        return True
+    def check_user(self, user_id: str) -> bool:
+        return self._check(f"u:{user_id}", self.per_user_limit)
+
+    def check_ip(self, ip: str) -> bool:
+        return self._check(f"ip:{ip}", self.per_ip_limit)
 
 
 rate_limiter = RateLimiter(
     per_user_limit=settings.rate_limit_per_user,
+    per_ip_limit=settings.rate_limit_per_user * 3,
     window_seconds=settings.rate_limit_window_seconds,
 )
 
 
+def _429_response(msg: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        content={"error": msg, "code": "RATE_LIMITED"},
+        headers={
+            "Retry-After": str(settings.rate_limit_window_seconds),
+            "X-RateLimit-Limit": str(settings.rate_limit_per_user),
+        },
+    )
+
+
 async def rate_limit_middleware(request: Request, call_next):
-    if request.url.path in NO_AUTH_PATHS or request.url.path.startswith("/ws"):
+    path = request.url.path
+    if path in _RATE_LIMIT_EXEMPT or path.startswith("/ws"):
         return await call_next(request)
 
-    if request.url.path.startswith("/metrics"):
-        return await call_next(request)
-
+    # Per-IP check (always enforced)
     client_ip = request.client.host if request.client else "unknown"
-    await rate_limiter.check_ip(client_ip)
+    if not rate_limiter.check_ip(client_ip):
+        return _429_response("IP rate limit exceeded")
+
+    # Per-user check (only for authenticated requests; user_id set by auth_middleware)
+    user_id = getattr(request.state, "user_id", None)
+    if user_id and not rate_limiter.check_user(user_id):
+        return _429_response("User rate limit exceeded")
 
     return await call_next(request)
 

@@ -2,6 +2,7 @@
 
 use crate::models::{ExtractedEntity, ExtractedRelationship};
 use crate::ontology::Ontology;
+use rayon::prelude::*;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -55,44 +56,47 @@ impl OntologyValidator {
         entities: Vec<ExtractedEntity>,
         relationships: Vec<ExtractedRelationship>,
     ) -> ValidationReport {
-        let mut valid_entities = Vec::new();
-        let mut dropped_entities = Vec::new();
+        let threshold = self.confidence_threshold;
+        let ontology = &self.ontology;
 
-        for entity in entities {
-            if entity.name.trim().is_empty() {
-                dropped_entities.push((entity, ValidationError::EmptyEntityName));
-                continue;
-            }
+        // Rayon parallel entity validation — each entity is classified independently.
+        let (valid_entities, dropped_entities): (Vec<_>, Vec<_>) = entities
+            .into_par_iter()
+            .map(|entity| -> Result<ExtractedEntity, (ExtractedEntity, ValidationError)> {
+                if entity.name.trim().is_empty() {
+                    return Err((entity, ValidationError::EmptyEntityName));
+                }
+                if entity.confidence < threshold {
+                    let name = entity.name.clone();
+                    let confidence = entity.confidence;
+                    return Err((
+                        entity,
+                        ValidationError::ConfidenceBelowThreshold {
+                            entity_name: name,
+                            confidence,
+                            threshold,
+                        },
+                    ));
+                }
+                if !ontology.is_valid_entity_type(&entity.entity_type) {
+                    let name = entity.name.clone();
+                    let type_name = entity.entity_type.clone();
+                    return Err((
+                        entity,
+                        ValidationError::UnknownEntityType {
+                            entity_name: name,
+                            type_name,
+                        },
+                    ));
+                }
+                Ok(entity)
+            })
+            .partition(Result::is_ok);
 
-            if entity.confidence < self.confidence_threshold {
-                let name = entity.name.clone();
-                let confidence = entity.confidence;
-                dropped_entities.push((
-                    entity,
-                    ValidationError::ConfidenceBelowThreshold {
-                        entity_name: name,
-                        confidence,
-                        threshold: self.confidence_threshold,
-                    },
-                ));
-                continue;
-            }
-
-            if !self.ontology.is_valid_entity_type(&entity.entity_type) {
-                let name = entity.name.clone();
-                let type_name = entity.entity_type.clone();
-                dropped_entities.push((
-                    entity,
-                    ValidationError::UnknownEntityType {
-                        entity_name: name,
-                        type_name,
-                    },
-                ));
-                continue;
-            }
-
-            valid_entities.push(entity);
-        }
+        let valid_entities: Vec<ExtractedEntity> =
+            valid_entities.into_iter().filter_map(Result::ok).collect();
+        let dropped_entities: Vec<(ExtractedEntity, ValidationError)> =
+            dropped_entities.into_iter().filter_map(Result::err).collect();
 
         let entity_type_map: HashMap<String, String> = valid_entities
             .iter()

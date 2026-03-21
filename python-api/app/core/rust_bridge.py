@@ -97,3 +97,76 @@ async def rust_init_collection_async(collection_id: str) -> None:
         )
     except Exception as e:
         logger.error(f"Rust init collection error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 background tasks
+# ---------------------------------------------------------------------------
+
+async def _tantivy_commit_loop(interval_seconds: float = 0.5) -> None:
+    """Commit staged Tantivy documents every `interval_seconds`.
+
+    This implements the Phase 3 "Tantivy batch committer: 500 ms interval"
+    requirement.  Start once at application startup:
+
+        asyncio.create_task(_tantivy_commit_loop())
+    """
+    loop = asyncio.get_event_loop()
+    while True:
+        await asyncio.sleep(interval_seconds)
+        im = get_index_manager()
+        if im is None:
+            continue
+        try:
+            await loop.run_in_executor(
+                _executor,
+                lambda: im.flush_tantivy(),
+            )
+        except Exception as e:
+            logger.debug(f"Tantivy commit loop error (non-fatal): {e}")
+
+
+async def _graph_prune_loop(
+    collection_ids_fn,
+    interval_seconds: float = 3600.0,
+    min_weight: float = 0.3,
+    max_degree: int = 100,
+) -> None:
+    """Hourly graph-pruning background task.
+
+    `collection_ids_fn` is a zero-argument async callable that returns the
+    list of active collection IDs to prune.  Example startup usage:
+
+        asyncio.create_task(
+            _graph_prune_loop(
+                collection_ids_fn=lambda: list_active_collection_ids(),
+            )
+        )
+    """
+    import json as _json
+    loop = asyncio.get_event_loop()
+    while True:
+        await asyncio.sleep(interval_seconds)
+        im = get_index_manager()
+        if im is None:
+            continue
+        try:
+            collection_ids = await collection_ids_fn()
+            for cid in collection_ids:
+                try:
+                    result_json = await loop.run_in_executor(
+                        _executor,
+                        lambda c=cid: im.prune_graph(c, min_weight, max_degree),
+                    )
+                    result = _json.loads(result_json)
+                    if result.get("edges_removed", 0) > 0:
+                        logger.info(
+                            "Graph pruned collection=%s removed=%d affected=%d",
+                            cid,
+                            result["edges_removed"],
+                            result.get("nodes_affected", 0),
+                        )
+                except Exception as e:
+                    logger.warning(f"Graph prune failed for collection {cid}: {e}")
+        except Exception as e:
+            logger.warning(f"Graph prune loop error: {e}")

@@ -59,6 +59,7 @@ class IngestOptions(BaseModel):
     max_depth: int = 5
     chunk_size_tokens: int = 512
     chunk_overlap_tokens: int = 50
+    extract_entities: bool = True
 
 
 class IngestFolderRequest(BaseModel):
@@ -144,3 +145,133 @@ class DocumentDetailResponse(BaseModel):
     document: DocumentResponse
     chunks: list[dict]
     chunk_count: int
+
+
+# ---------------------------------------------------------------------------
+# Graph
+# ---------------------------------------------------------------------------
+
+class GraphNodeResponse(BaseModel):
+    id: str
+    label: str
+    entity_type: str
+    description: Optional[str] = None
+    confidence: float = 1.0
+    properties: dict = Field(default_factory=dict)
+    source_chunk_ids: list[str] = Field(default_factory=list)
+    topics: list[str] = Field(default_factory=list)
+    collection_id: Optional[str] = None
+
+
+class LinkedChunk(BaseModel):
+    chunk_id: str
+    doc_id: str
+    doc_title: str
+    text: str
+    page: Optional[int] = None
+
+
+class GraphNodeDetailResponse(GraphNodeResponse):
+    linked_chunks: list[LinkedChunk] = Field(default_factory=list)
+    neighbors: list["GraphNodeResponse"] = Field(default_factory=list)
+
+
+class GraphEdgeResponse(BaseModel):
+    id: str
+    source: str
+    target: str
+    relation_type: str
+    weight: float = 1.0
+    properties: dict = Field(default_factory=dict)
+    collection_id: Optional[str] = None
+
+
+class GraphDataResponse(BaseModel):
+    nodes: list[GraphNodeResponse]
+    edges: list[GraphEdgeResponse]
+    total_nodes: int
+    total_edges: int
+
+
+class GraphPathResponse(BaseModel):
+    path: list[str]
+    nodes: list[GraphNodeResponse]
+    edges: list[GraphEdgeResponse]
+
+
+class UpdateGraphNodeRequest(BaseModel):
+    label: Optional[str] = None
+    description: Optional[str] = None
+    properties: Optional[dict] = None
+
+
+class CreateGraphEdgeRequest(BaseModel):
+    collection_id: str
+    source: str
+    target: str
+    relation_type: str
+    weight: float = 1.0
+    properties: dict = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Ontology
+# ---------------------------------------------------------------------------
+
+class EntityTypeDef(BaseModel):
+    description: Optional[str] = None
+    parent: Optional[str] = None
+    examples: list[str] = Field(default_factory=list)
+
+
+class RelationTypeDef(BaseModel):
+    domain: list[str]
+    range: list[str]
+    description: Optional[str] = None
+
+
+class OntologyResponse(BaseModel):
+    collection_id: str
+    version: int = 1
+    entity_types: dict[str, EntityTypeDef] = Field(default_factory=dict)
+    relationship_types: dict[str, RelationTypeDef] = Field(default_factory=dict)
+    updated_at: Optional[int] = None
+
+
+class UpdateOntologyRequest(BaseModel):
+    entity_types: Optional[dict[str, EntityTypeDef]] = None
+    relationship_types: Optional[dict[str, RelationTypeDef]] = None
+
+
+class GenerateOntologyRequest(BaseModel):
+    collection_id: str
+
+
+# ---------------------------------------------------------------------------
+# Topics
+# ---------------------------------------------------------------------------
+
+class TopicResponse(BaseModel):
+    id: str
+    collection_id: str
+    name: str
+    node_count: int = 0
+    chunk_count: int = 0
+
+
+class TopicListResponse(BaseModel):
+    topics: list[TopicResponse]
+    total: int
+
+
+# ---------------------------------------------------------------------------
+# User feedback
+# ---------------------------------------------------------------------------
+
+class UserFeedbackCreate(BaseModel):
+    collection_id: str
+    entity_type: str  # "node_edit" | "edge_delete" | "search_feedback"
+    target_id: str
+    action: str
+    before: Optional[dict] = None
+    after: Optional[dict] = None

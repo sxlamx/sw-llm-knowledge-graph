@@ -1,5 +1,6 @@
 """RS256 JWT token management."""
 
+import asyncio
 import jwt as pyjwt
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -10,7 +11,8 @@ from app.config import get_settings
 
 settings = get_settings()
 
-_revoked_tokens: set[str] = {}
+# In-memory fast-path set (supplements DB for the current process lifetime)
+_revoked_tokens: set[str] = set()
 
 
 def _load_private_key() -> Optional[object]:
@@ -81,11 +83,33 @@ def verify_token(token: str) -> Optional[dict]:
         return None
 
 
-def revoke_token(jti: str) -> None:
+def revoke_token(jti: str, expires_at: Optional[int] = None) -> None:
+    """Revoke a token by JTI. Persists to DB asynchronously."""
     _revoked_tokens.add(jti)
+    # Persist to DB in background (best-effort)
+    try:
+        from app.db.lancedb_client import revoke_token_db
+        expires_us = expires_at or int(
+            (datetime.now(timezone.utc) + timedelta(days=settings.jwt_refresh_expiry_days)).timestamp() * 1_000_000
+        )
+        asyncio.ensure_future(revoke_token_db(jti, expires_us))
+    except RuntimeError:
+        # No running event loop (e.g. during tests) — in-memory only is fine
+        pass
+
+
+async def is_token_revoked_async(jti: str) -> bool:
+    """Check revocation: fast in-memory path first, then DB fallback."""
+    if jti in _revoked_tokens:
+        return True
+    try:
+        from app.db.lancedb_client import is_token_revoked
+        return await is_token_revoked(jti)
+    except Exception:
+        return False
 
 
 def refresh_token_rotated(old_jti: Optional[str]) -> str:
     if old_jti:
-        _revoked_tokens.add(old_jti)
+        revoke_token(old_jti)
     return str(uuid.uuid4())

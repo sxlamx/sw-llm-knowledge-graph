@@ -186,6 +186,69 @@ impl KnowledgeGraph {
     pub fn edge_count(&self) -> usize {
         self.edges.len()
     }
+
+    /// Prune low-weight edges and enforce a per-node out-degree cap.
+    ///
+    /// Steps:
+    ///   1. Remove all edges whose `weight < min_weight`.
+    ///   2. For each node, if out-degree exceeds `max_degree`, keep only the
+    ///      `max_degree` highest-weight outbound edges and drop the rest.
+    ///   3. Rebuild adjacency maps to stay consistent with the pruned edge set.
+    ///   4. Bumps the graph version so caches are invalidated.
+    ///
+    /// Returns `(edges_removed, nodes_affected)`.
+    pub fn prune_edges(&mut self, min_weight: f32, max_degree: usize) -> (usize, usize) {
+        let before = self.edges.len();
+
+        // ── Step 1: Remove below-threshold edges ──────────────────────────
+        self.edges.retain(|_, e| e.weight >= min_weight);
+
+        // ── Step 2: Enforce max out-degree ────────────────────────────────
+        // Group edges by source node.
+        let mut by_source: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+        for (eid, edge) in &self.edges {
+            by_source.entry(edge.source).or_default().push(*eid);
+        }
+
+        let mut over_degree_nodes = 0usize;
+        for (_, edge_ids) in by_source.iter_mut() {
+            if edge_ids.len() > max_degree {
+                // Sort descending by weight; keep top `max_degree`, drop the rest.
+                edge_ids.sort_by(|a, b| {
+                    let wa = self.edges.get(a).map(|e| e.weight).unwrap_or(0.0);
+                    let wb = self.edges.get(b).map(|e| e.weight).unwrap_or(0.0);
+                    wb.partial_cmp(&wa).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                let to_remove = edge_ids.split_off(max_degree);
+                for eid in to_remove {
+                    self.edges.remove(&eid);
+                }
+                over_degree_nodes += 1;
+            }
+        }
+
+        // ── Step 3: Rebuild adjacency maps ───────────────────────────────
+        self.adjacency_out.clear();
+        self.adjacency_in.clear();
+        for (eid, edge) in &self.edges {
+            self.adjacency_out
+                .entry(edge.source)
+                .or_default()
+                .push((*eid, edge.target));
+            self.adjacency_in
+                .entry(edge.target)
+                .or_default()
+                .push((*eid, edge.source));
+        }
+
+        // ── Step 4: Bump version ─────────────────────────────────────────
+        let removed = before - self.edges.len();
+        if removed > 0 {
+            self.version.fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
+
+        (removed, over_degree_nodes)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
