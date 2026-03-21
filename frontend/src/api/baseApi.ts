@@ -1,4 +1,4 @@
-import { createApi, fetchBaseQuery, BaseQueryFn, FetchArgs, FetchBaseQueryError } from '@reduxjs/toolkit/query/react';
+import { createApi, fetchBaseQuery, retry, BaseQueryFn, FetchArgs, FetchBaseQueryError } from '@reduxjs/toolkit/query/react';
 import { RootState } from '../store';
 import { setAccessToken, logout } from '../store/slices/authSlice';
 
@@ -39,9 +39,22 @@ const baseQueryWithReauth: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQue
   return result;
 };
 
+// Retry up to 3 times on 5xx / network errors; never retry on 4xx (client errors).
+const retryingBaseQuery = retry(baseQueryWithReauth, {
+  maxRetries: 3,
+  backoff: async (attempt) => {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * 2 ** attempt, 10_000)));
+  },
+  retryCondition: (error) => {
+    const status = (error as FetchBaseQueryError)?.status;
+    if (typeof status === 'number' && status >= 400 && status < 500) return false;
+    return true;
+  },
+});
+
 export const api = createApi({
   reducerPath: 'api',
-  baseQuery: baseQueryWithReauth,
+  baseQuery: retryingBaseQuery,
   tagTypes: [
     'Collection',
     'Document',
