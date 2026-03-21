@@ -26,6 +26,7 @@ export default defineConfig({
     format: 'es',
   },
   server: {
+    port: 5333,
     proxy: {
       '/api': 'http://localhost:8000',
       '/ws': { target: 'ws://localhost:8000', ws: true },

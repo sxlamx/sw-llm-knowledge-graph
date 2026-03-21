@@ -21,7 +21,7 @@ services:
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - JWT_PRIVATE_KEY_PATH=/run/secrets/jwt_private_key
       - JWT_PUBLIC_KEY_PATH=/run/secrets/jwt_public_key
-      - FRONTEND_ORIGIN=http://localhost:3000
+      - FRONTEND_ORIGIN=http://localhost:5333
       - ALLOWED_FOLDER_ROOTS=/data/documents
       - RUST_LOG=info
     volumes:
@@ -42,7 +42,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.frontend
     ports:
-      - "3000:80"
+      - "5333:80"
     depends_on:
       - python-api
     restart: unless-stopped

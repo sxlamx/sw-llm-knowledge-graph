@@ -8,7 +8,7 @@ version: "3.9"
 #   bash scripts/generate_jwt_keys.sh
 #   docker compose up --build -d
 #
-# Services  : python-api (8000) · frontend (3000)
+# Services  : python-api (8000) · frontend (5333)
 # Volumes   : lancedb_data · documents
 # ---------------------------------------------------------------------------
 
@@ -52,7 +52,7 @@ services:
       JWT_EXPIRY_MINUTES: ${JWT_EXPIRY_MINUTES:-10}
       JWT_REFRESH_EXPIRY_DAYS: ${JWT_REFRESH_EXPIRY_DAYS:-7}
       # CORS
-      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5333}
       # Multimodal (PDF image extraction)
       VISION_MODEL: ${VISION_MODEL:-gpt-4o-mini}
       VISION_ENABLED: ${VISION_ENABLED:-true}
@@ -87,7 +87,7 @@ services:
     image: kg-frontend:latest
     restart: unless-stopped
     ports:
-      - "3000:80"
+      - "5333:80"
     depends_on:
       python-api:
         condition: service_healthy

@@ -13,7 +13,7 @@ npx playwright install chromium
 ## Running
 
 ```bash
-# Against local dev server (default: http://localhost:3000)
+# Against local dev server (default: http://localhost:5333)
 npm test
 
 # Against a custom deployment
@@ -27,7 +27,7 @@ npm run test:headed
 
 | Variable | Default | Description |
 |---|---|---|
-| `E2E_BASE_URL` | `http://localhost:3000` | Frontend URL |
+| `E2E_BASE_URL` | `http://localhost:5333` | Frontend URL |
 | `E2E_API_BASE` | `http://localhost:8000/api/v1` | API URL (for route mocking reference) |
 | `E2E_DEV_TOKEN` | `dev_token_e2e` | Dev JWT injected into Redux store |
 
