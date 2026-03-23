@@ -168,6 +168,7 @@ async def run(
         "started_at": now,
         "completed_at": 0,
         "options": "{}",
+        "last_completed_file": "",
     })
 
     logger.info(
@@ -217,11 +218,11 @@ async def _run_pipeline(
     settings = get_settings()
     options = IngestOptions(chunk_size_tokens=chunk_size)
     loop = asyncio.get_event_loop()
-    all_nodes: list[dict] = []
-    all_edges: list[dict] = []
     all_topics: set[str] = set()
     processed = 0
     total = len(file_paths)
+    total_nodes = 0
+    total_edges = 0
 
     for file_path in file_paths:
         p = Path(file_path)
@@ -337,13 +338,14 @@ async def _run_pipeline(
             now_us = int(datetime.utcnow().timestamp() * 1_000_000)
             if not skip_entities:
                 logger.info(f"  Extracting entities + NER from {len(chunk_records)} chunks...")
-                from app.pipeline.ingest_worker import _extract_graph
+                from app.pipeline.ingest_worker import _extract_graph, _flush_graph
                 extracted_nodes, extracted_edges, ner_tags_map = await _extract_graph(
                     chunk_records, doc_uuid, collection_id, summary, None
                 )
-                all_nodes.extend(extracted_nodes)
-                all_edges.extend(extracted_edges)
-                logger.info(f"  +{len(extracted_nodes)} entities, +{len(extracted_edges)} relations")
+                logger.info(f"  +{len(extracted_nodes)} entities, +{len(extracted_edges)} relations — flushing...")
+                await _flush_graph(extracted_nodes, extracted_edges, collection_id, im)
+                total_nodes += len(extracted_nodes)
+                total_edges += len(extracted_edges)
             else:
                 logger.info(f"  Running spaCy NER on {len(chunk_records)} chunks...")
                 from app.pipeline.ingest_worker import _run_ner_only
@@ -370,16 +372,14 @@ async def _run_pipeline(
             })
             continue
         processed += 1
+        # Checkpoint: record the last successfully completed file so a resumed run
+        # can confirm progress even if hash dedup is the primary resume mechanism.
         await update_ingest_job(job_id, {
             "processed_docs": processed,
             "progress": processed / max(total, 1),
+            "last_completed_file": file_path,
         })
-
-    # Flush graph
-    if all_nodes:
-        logger.info(f"Saving {len(all_nodes)} nodes, {len(all_edges)} edges...")
-        from app.pipeline.ingest_worker import _flush_graph
-        await _flush_graph(all_nodes, all_edges, collection_id, im)
+        logger.info(f"  [checkpoint] {p.name} done ({processed}/{total})")
 
     # Persist topics
     for topic_name in all_topics:
@@ -399,7 +399,7 @@ async def _run_pipeline(
         "completed_at": int(datetime.utcnow().timestamp() * 1_000_000),
     })
 
-    logger.info(f"Done: {processed}/{total} docs | {len(all_nodes)} entities | {len(all_topics)} topics")
+    logger.info(f"Done: {processed}/{total} docs | {total_nodes} entities | {total_edges} relations | {len(all_topics)} topics")
 
 
 async def backfill_ner(collection_id: str, concurrency: int) -> None:

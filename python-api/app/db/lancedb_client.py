@@ -49,6 +49,7 @@ _SYSTEM_SCHEMAS: dict[str, pa.Schema] = {
         pa.field("processed_docs", _I32), pa.field("error_msg", _STR),
         pa.field("started_at", _I64), pa.field("completed_at", _I64),
         pa.field("created_at", _I64), pa.field("options", _STR),
+        pa.field("last_completed_file", _STR),  # checkpoint: last successfully flushed doc
     ]),
     "revoked_tokens": pa.schema([
         pa.field("jti", _STR), pa.field("revoked_at", _I64), pa.field("expires_at", _I64),
