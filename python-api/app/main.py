@@ -19,7 +19,7 @@ from app.db.lancedb_client import get_lancedb, init_system_tables
 from app.auth.middleware import auth_middleware, rate_limit_middleware
 from app.routers import auth, collections, ingest, search, documents
 from app.routers import graph, ontology, topics
-from app.routers import drive, analytics, agent, finetune
+from app.routers import drive, analytics, agent, finetune, admin
 from app.routers.ws import router as ws_router
 
 settings = get_settings()
@@ -69,7 +69,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_origin, "http://localhost:3000"],
+    allow_origins=[settings.frontend_origin, "http://localhost:5333"],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
@@ -90,6 +90,7 @@ app.include_router(drive.router, prefix="/api/v1/drive", tags=["drive"])
 app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
 app.include_router(agent.router, prefix="/api/v1/agent", tags=["agent"])
 app.include_router(finetune.router, prefix="/api/v1/finetune", tags=["finetune"])
+app.include_router(admin.router,   prefix="/api/v1/admin",   tags=["admin"])
 app.include_router(ws_router, tags=["websocket"])
 
 
@@ -153,10 +154,12 @@ async def security_headers(request: Request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self'; "
+        "script-src 'self' https://accounts.google.com https://apis.google.com; "
         "style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data: https://lh3.googleusercontent.com; "
-        "connect-src 'self' https://accounts.google.com; "
+        "img-src 'self' data: https://lh3.googleusercontent.com https://www.gstatic.com; "
+        "connect-src 'self' https://accounts.google.com https://oauth2.googleapis.com "
+        "ws://localhost:8333 wss://localhost:8333; "
+        "frame-src https://accounts.google.com; "
         "frame-ancestors 'none';"
     )
     return response

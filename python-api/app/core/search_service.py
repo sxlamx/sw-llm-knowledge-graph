@@ -159,7 +159,7 @@ async def _graph_channel(query: str, collection_id: str, limit: int) -> list[dic
         try:
             tbl = db.open_table(f"{collection_id}_chunks")
             for cid, score in list(chunk_scores.items())[:limit]:
-                rows = tbl.query().where(f'id = "{cid}"').to_list()
+                rows = tbl.search().where(f'id = "{cid}"', prefilter=True).limit(1).to_list()
                 if rows:
                     c = rows[0]
                     results.append({

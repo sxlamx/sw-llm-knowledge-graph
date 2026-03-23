@@ -159,6 +159,14 @@ const Collection: React.FC = () => {
                         />
                       </TableCell>
                       <TableCell align="right">
+                        <Tooltip title="View document graph">
+                          <IconButton
+                            size="small"
+                            onClick={() => navigate(`/graph/${id}?doc_id=${doc.id}`)}
+                          >
+                            <AccountTreeIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
                         <Tooltip title="Delete document">
                           <IconButton size="small" color="error" onClick={() => handleDeleteDoc(doc.id)}>
                             <DeleteIcon fontSize="small" />

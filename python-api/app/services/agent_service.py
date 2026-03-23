@@ -13,7 +13,12 @@ from app.db.lancedb_client import (
     vector_search,
 )
 from app.llm.embedder import embed_texts
-from app.llm.extractor import _llm_client  # shared async OpenAI client
+
+
+def _llm_client():
+    from openai import AsyncOpenAI
+    s = get_settings()
+    return AsyncOpenAI(base_url=s.ollama_cloud_base_url, api_key=s.ollama_cloud_api_key or "sk-placeholder")
 
 settings = get_settings()
 logger = logging.getLogger(__name__)

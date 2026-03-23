@@ -3,7 +3,6 @@
 import asyncio
 from typing import Callable, Optional
 from app.models.schemas import IngestOptions
-from app.pipeline.ingest_worker import run_ingest_pipeline
 
 _job_queues: dict[str, asyncio.Queue] = {}
 _job_queues_lock = asyncio.Lock()
@@ -23,18 +22,18 @@ class JobManager:
         folder_path: str,
         options: IngestOptions,
     ) -> None:
+        from app.pipeline.ingest_worker import run_ingest_pipeline  # lazy to avoid circular
         await run_ingest_pipeline(job_id, collection_id, folder_path, options)
 
-    async def emit(self, job_id: str, event: dict) -> None:
-        async with _subscribers_lock:
-            for callback in _subscribers.get(job_id, []):
-                try:
-                    if asyncio.iscoroutinefunction(callback):
-                        await callback(event)
-                    else:
-                        callback(event)
-                except Exception:
-                    pass
+    def emit(self, job_id: str, event: dict) -> None:
+        for callback in list(_subscribers.get(job_id, [])):
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    asyncio.ensure_future(callback(event))
+                else:
+                    callback(event)
+            except Exception:
+                pass
 
     def subscribe(self, job_id: str, callback: Callable) -> None:
         pass

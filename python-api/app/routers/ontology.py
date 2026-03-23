@@ -140,7 +140,7 @@ async def generate_ontology_endpoint(
     sample_texts = []
     try:
         tbl = db.open_table(f"{body.collection_id}_chunks")
-        rows = tbl.query().limit(20).to_list()
+        rows = tbl.search().limit(20).to_list()
         sample_texts = [r.get("text", "") for r in rows if r.get("text")]
     except Exception:
         pass

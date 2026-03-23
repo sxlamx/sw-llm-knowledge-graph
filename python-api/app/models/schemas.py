@@ -265,6 +265,35 @@ class TopicListResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Node summary (LLM-generated, cached)
+# ---------------------------------------------------------------------------
+
+class NodeSummaryResponse(BaseModel):
+    node_id: str
+    summary: str
+    chunk_hash: str
+    updated_at: Optional[int] = None
+    from_cache: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Clustering / community topics
+# ---------------------------------------------------------------------------
+
+class ClusterTopic(BaseModel):
+    id: int
+    topic: str
+    node_ids: list[str]
+    size: int
+    color: str  # hex color
+
+
+class ClusterTopicsResponse(BaseModel):
+    clusters: list[ClusterTopic]
+    total_clusters: int
+
+
+# ---------------------------------------------------------------------------
 # User feedback
 # ---------------------------------------------------------------------------
 

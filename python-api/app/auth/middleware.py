@@ -133,3 +133,13 @@ async def get_current_user(request: Request) -> dict:
         "email": getattr(request.state, "user_email", ""),
         "name": getattr(request.state, "user_name", ""),
     }
+
+
+async def require_admin(request: Request) -> dict:
+    """FastAPI dependency that requires the caller to have role='admin'."""
+    from app.db.lancedb_client import get_user_by_id
+    user = await get_current_user(request)
+    db_user = await get_user_by_id(user["id"])
+    if not db_user or db_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return {**user, "role": "admin"}

@@ -19,7 +19,7 @@ const FineTune = lazy(() => import('./pages/FineTune'));
 const App: React.FC = () => (
   <ErrorBoundary>
     <AppThemeProvider>
-      <BrowserRouter>
+      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Suspense fallback={<LoadingOverlay message="Loading..." />}>
           <Routes>
             <Route path="/" element={<Landing />} />

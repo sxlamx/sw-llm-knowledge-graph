@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request, HTTPException, Response, Depends
 from app.auth.google import validate_google_id_token
 from app.auth.jwt import issue_access_token, issue_refresh_token, verify_token
 from app.auth.middleware import get_current_user
-from app.db.lancedb_client import create_or_update_user, get_user_by_id
+from app.db.lancedb_client import create_or_update_user, get_user_by_id, get_user_by_google_sub
 from app.models.schemas import AuthResponse, RefreshResponse, UserResponse
 from app.config import get_settings
 import uuid
@@ -39,7 +39,7 @@ async def google_auth(request: Request, response: Response):
             key="kg_refresh_token",
             value=refresh_token,
             httponly=True,
-            secure=True,
+            secure=settings.cookie_secure,
             samesite="strict",
             max_age=7 * 24 * 3600,
             path="/api/v1/auth",
@@ -64,6 +64,17 @@ async def google_auth(request: Request, response: Response):
     user_id = await create_or_update_user(user_info)
     user_info["id"] = user_id
 
+    # Enforce access control — pending/blocked users cannot log in
+    db_user = await get_user_by_google_sub(user_info["google_sub"])
+    status = (db_user or {}).get("status", "pending")
+    if status == "blocked":
+        raise HTTPException(status_code=403, detail="Account has been blocked")
+    if status == "pending":
+        raise HTTPException(
+            status_code=403,
+            detail="Account pending approval. Contact an administrator to activate your account.",
+        )
+
     access_token = issue_access_token(user_info)
     refresh_tok = issue_refresh_token(user_info)
 
@@ -71,7 +82,7 @@ async def google_auth(request: Request, response: Response):
         key="kg_refresh_token",
         value=refresh_tok,
         httponly=True,
-        secure=True,
+        secure=settings.cookie_secure,
         samesite="strict",
         max_age=7 * 24 * 3600,
         path="/api/v1/auth",
@@ -110,7 +121,7 @@ async def refresh_token(request: Request, response: Response):
         key="kg_refresh_token",
         value=issue_refresh_token(user),
         httponly=True,
-        secure=True,
+        secure=settings.cookie_secure,
         samesite="strict",
         max_age=7 * 24 * 3600,
         path="/api/v1/auth",

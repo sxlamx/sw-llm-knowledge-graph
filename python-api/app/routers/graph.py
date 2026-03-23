@@ -1,8 +1,31 @@
 """Graph router — knowledge graph CRUD and traversal."""
 
 import json
+import re
 import uuid
+from pathlib import Path
 from typing import Optional
+
+_UUID_RE = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+    re.IGNORECASE,
+)
+
+def _resolve_doc_title(doc: dict) -> str:
+    raw = doc.get("title", "")
+    if raw and not _UUID_RE.match(raw):
+        return raw
+    file_path = doc.get("file_path") or doc.get("path") or ""
+    return Path(file_path).name if file_path else (raw or "Untitled")
+
+
+def _parse_props(v) -> dict:
+    if isinstance(v, str):
+        try:
+            return json.loads(v)
+        except Exception:
+            return {}
+    return v or {}
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
@@ -20,12 +43,17 @@ from app.db.lancedb_client import (
     delete_graph_edge,
     list_documents,
     insert_user_feedback,
+    get_node_summary,
+    upsert_node_summary,
+    get_chunk_ids_with_ner_labels,
+    get_chunk_ids_with_ner_keywords,
 )
 from app.core.rust_bridge import get_index_manager
 from app.models.schemas import (
     GraphDataResponse, GraphNodeResponse, GraphNodeDetailResponse,
     GraphEdgeResponse, GraphPathResponse, LinkedChunk,
     UpdateGraphNodeRequest, CreateGraphEdgeRequest, UserFeedbackCreate,
+    NodeSummaryResponse,
 )
 
 router = APIRouter()
@@ -38,7 +66,7 @@ def _node_to_response(n: dict) -> GraphNodeResponse:
         entity_type=n.get("entity_type", n.get("node_type", "Concept")),
         description=n.get("description"),
         confidence=float(n.get("confidence", 1.0)),
-        properties=n.get("properties") or {},
+        properties=_parse_props(n.get("properties")),
         source_chunk_ids=n.get("source_chunk_ids") or [],
         topics=n.get("topics") or [],
         collection_id=n.get("collection_id"),
@@ -52,7 +80,7 @@ def _edge_to_response(e: dict) -> GraphEdgeResponse:
         target=e.get("target", e.get("target_id", "")),
         relation_type=e.get("relation_type", e.get("edge_type", e.get("predicate", ""))),
         weight=float(e.get("weight", 1.0)),
-        properties=e.get("properties") or {},
+        properties=_parse_props(e.get("properties")),
         collection_id=e.get("collection_id"),
     )
 
@@ -72,20 +100,101 @@ async def get_subgraph(
     depth: int = Query(2, ge=1, le=4),
     page: int = Query(0, ge=0),
     limit: int = Query(500, le=2000),
+    date_from: Optional[str] = Query(None, description="ISO date filter start (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="ISO date filter end (YYYY-MM-DD)"),
+    doc_id: Optional[str] = Query(None, description="Filter nodes sourced from this document"),
+    entity_type_filters: list[str] = Query(default=[], description="Filter nodes by entity_type (e.g. Person, Organization)"),
+    ner_label_filters: list[str] = Query(default=[], description="Filter nodes whose source chunks contain these NER labels (e.g. LEGISLATION_TITLE)"),
+    ner_keyword_filters: list[str] = Query(default=[], description="Filter nodes whose source chunks contain these specific NER keyword texts (e.g. Chicago, Singapore)"),
     current_user: dict = Depends(get_current_user),
 ):
     await _require_collection_access(collection_id, current_user)
 
-    # Try in-memory Rust graph first
+    # Parse date bounds to microsecond timestamps (LanceDB stores created_at in µs)
+    from datetime import datetime as _dt
+    ts_from: Optional[int] = None
+    ts_to: Optional[int] = None
+    if date_from:
+        try:
+            ts_from = int(_dt.fromisoformat(date_from).timestamp() * 1_000_000)
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            ts_to = int(_dt.fromisoformat(date_to).timestamp() * 1_000_000) + 86_400_000_000  # inclusive day-end
+        except ValueError:
+            pass
+
+    # Resolve chunk IDs for the given document
+    doc_chunk_ids: Optional[set[str]] = None
+    if doc_id:
+        from app.db.lancedb_client import get_lancedb
+        db = await get_lancedb()
+        try:
+            tbl = db.open_table(f"{collection_id}_chunks")
+            rows = tbl.search().where(f'doc_id = "{doc_id}"', prefilter=True).to_list()
+            doc_chunk_ids = {r["id"] for r in rows if r.get("id")}
+        except Exception:
+            doc_chunk_ids = set()
+
+    # Resolve chunk IDs that carry the requested NER labels
+    ner_chunk_ids: Optional[set[str]] = None
+    if ner_label_filters:
+        ner_chunk_ids = await get_chunk_ids_with_ner_labels(collection_id, ner_label_filters)
+
+    # Build a label set for direct node-label matching against keyword filters.
+    # Chunk-based lookup was too broad — it returned every node co-extracted from
+    # the same chunk, not just the node whose label IS the keyword.
+    ner_keyword_label_set: Optional[set[str]] = (
+        {k.lower() for k in ner_keyword_filters} if ner_keyword_filters else None
+    )
+
+    # Normalise entity_type filter to a set for O(1) lookup
+    entity_type_set: Optional[set[str]] = set(entity_type_filters) if entity_type_filters else None
+
+    def _passes_filters(node: dict) -> bool:
+        # Date filter
+        ts = node.get("created_at") or node.get("updated_at") or 0
+        if ts_from is not None and ts < ts_from:
+            return False
+        if ts_to is not None and ts > ts_to:
+            return False
+        # Document filter — node must reference at least one chunk from the doc
+        if doc_chunk_ids is not None:
+            chunk_ids = set(node.get("source_chunk_ids") or [])
+            if not chunk_ids & doc_chunk_ids:
+                return False
+        # Entity type filter
+        if entity_type_set is not None:
+            etype = node.get("entity_type") or node.get("node_type") or ""
+            if etype not in entity_type_set:
+                return False
+        # NER label filter — node must source from at least one NER-matching chunk
+        if ner_chunk_ids is not None:
+            chunk_ids = set(node.get("source_chunk_ids") or [])
+            if not chunk_ids & ner_chunk_ids:
+                return False
+        # NER keyword filter — node label must directly match one of the selected keywords
+        if ner_keyword_label_set is not None:
+            label = (node.get("label") or "").lower()
+            if label not in ner_keyword_label_set:
+                return False
+        return True
+
+    # Try in-memory Rust graph first — only when no field-dependent filters are set.
+    # Rust graph nodes lack source_chunk_ids / entity_type, so skip it when those
+    # filters are active to avoid silently returning an empty graph.
     im = get_index_manager()
-    if im is not None:
+    use_rust = im is not None and entity_type_set is None and ner_chunk_ids is None
+    if use_rust:
         try:
             data_json = im.get_graph_data(collection_id)
             data = json.loads(data_json)
             if data.get("total_nodes", 0) > 0:
+                all_nodes = [n for n in data["nodes"] if _passes_filters(n)]
                 offset = page * limit
-                nodes = data["nodes"][offset: offset + limit]
-                node_ids = {n.get("id", n.get("id")) for n in nodes}
+                nodes = all_nodes[offset: offset + limit]
+                node_ids = {n.get("id") for n in nodes}
                 edges = [
                     e for e in data["edges"]
                     if e.get("source") in node_ids and e.get("target") in node_ids
@@ -93,18 +202,19 @@ async def get_subgraph(
                 return GraphDataResponse(
                     nodes=[_node_to_response(n) for n in nodes],
                     edges=[_edge_to_response(e) for e in edges],
-                    total_nodes=data.get("total_nodes", len(nodes)),
-                    total_edges=data.get("total_edges", len(edges)),
+                    total_nodes=len(all_nodes),
+                    total_edges=len(edges),
                 )
         except Exception:
             pass
 
     # Fall back to LanceDB
     offset = page * limit
-    all_nodes = await list_graph_nodes(collection_id)
+    all_nodes_raw = await list_graph_nodes(collection_id)
+    all_nodes_raw = [n for n in all_nodes_raw if _passes_filters(n)]
     all_edges = await list_graph_edges(collection_id)
 
-    node_page = all_nodes[offset: offset + limit]
+    node_page = all_nodes_raw[offset: offset + limit]
     node_ids = {n["id"] for n in node_page}
     edge_page = [
         e for e in all_edges
@@ -115,7 +225,7 @@ async def get_subgraph(
     return GraphDataResponse(
         nodes=[_node_to_response(n) for n in node_page],
         edges=[_edge_to_response(e) for e in edge_page],
-        total_nodes=len(all_nodes),
+        total_nodes=len(all_nodes_raw),
         total_edges=len(all_edges),
     )
 
@@ -133,9 +243,19 @@ async def get_node_detail(
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
 
-    # Find linked source chunks
+    # Find linked source chunks.
+    # Use NER-matched chunks as the authoritative set (they are what the NER
+    # keyword panel counts), falling back to source_chunk_ids only when the
+    # node label produces no NER matches (e.g. node was extracted without a
+    # corresponding NER tag).  Never union the two — that inflates the count
+    # beyond what the NER panel shows.
     linked_chunks: list[LinkedChunk] = []
-    chunk_ids = node.get("source_chunk_ids") or []
+    node_label = node.get("label", "")
+    ner_matched = (
+        await get_chunk_ids_with_ner_keywords(collection_id, [node_label])
+        if node_label else set()
+    )
+    chunk_ids = list(ner_matched) if ner_matched else list(node.get("source_chunk_ids") or [])
     if chunk_ids:
         from app.db.lancedb_client import get_lancedb
         db = await get_lancedb()
@@ -143,15 +263,15 @@ async def get_node_detail(
             tbl = db.open_table(f"{collection_id}_chunks")
             # Fetch doc metadata for titles
             docs = {d["id"]: d for d in await list_documents(collection_id)}
-            for cid in chunk_ids[:10]:
-                rows = tbl.query().where(f'id = "{cid}"').to_list()
+            for cid in chunk_ids[:200]:
+                rows = tbl.search().where(f'id = "{cid}"', prefilter=True).limit(1).to_list()
                 if rows:
                     c = rows[0]
                     doc = docs.get(c.get("doc_id", ""), {})
                     linked_chunks.append(LinkedChunk(
                         chunk_id=c.get("id", cid),
                         doc_id=c.get("doc_id", ""),
-                        doc_title=doc.get("title", c.get("doc_id", "")),
+                        doc_title=_resolve_doc_title(doc) if doc else c.get("doc_id", ""),
                         text=c.get("text", ""),
                         page=c.get("page"),
                     ))
@@ -180,6 +300,117 @@ async def get_node_detail(
         **base.model_dump(),
         linked_chunks=linked_chunks,
         neighbors=neighbors,
+    )
+
+
+@router.get("/nodes/{node_id}/summary", response_model=NodeSummaryResponse)
+async def get_node_summary_endpoint(
+    node_id: str,
+    collection_id: str,
+    force: bool = Query(False, description="Force regeneration even if cached"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Return a cached LLM summary for a node; regenerate if chunks changed."""
+    import hashlib
+    import httpx
+    from app.config import get_settings
+
+    await _require_collection_access(collection_id, current_user)
+
+    node = await get_graph_node(collection_id, node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    # Collect chunk texts using the same NER-first logic as the detail endpoint
+    # so the LLM summary is grounded in exactly the chunks the panel shows.
+    node_label = node.get("label", node_id)
+    ner_matched = (
+        await get_chunk_ids_with_ner_keywords(collection_id, [node_label])
+        if node_label else set()
+    )
+    chunk_ids: list[str] = list(ner_matched) if ner_matched else list(node.get("source_chunk_ids") or [])
+    chunk_texts: list[str] = []
+    if chunk_ids:
+        from app.db.lancedb_client import get_lancedb
+        db = await get_lancedb()
+        try:
+            tbl = db.open_table(f"{collection_id}_chunks")
+            for cid in chunk_ids[:20]:  # cap to avoid huge prompts
+                rows = tbl.search().where(f'id = "{cid}"', prefilter=True).limit(1).to_list()
+                if rows:
+                    text = rows[0].get("contextual_text") or rows[0].get("text", "")
+                    if text.strip():
+                        chunk_texts.append(text[:600])
+        except Exception:
+            pass
+
+    # Compute content hash over chunk IDs (cheap proxy for content change)
+    raw_hash = "|".join(sorted(chunk_ids))
+    chunk_hash = hashlib.sha1(raw_hash.encode()).hexdigest()
+
+    # Check cache
+    if not force:
+        cached = await get_node_summary(collection_id, node_id)
+        if cached and cached.get("chunk_hash") == chunk_hash:
+            return NodeSummaryResponse(
+                node_id=node_id,
+                summary=cached["summary"],
+                chunk_hash=chunk_hash,
+                updated_at=cached.get("updated_at"),
+                from_cache=True,
+            )
+
+    # Generate summary via LLM
+    settings = get_settings()
+    node_label = node.get("label", node_id)
+    node_desc = node.get("description", "")
+    entity_type = node.get("entity_type", "entity")
+
+    if chunk_texts:
+        excerpts = "\n\n---\n\n".join(chunk_texts)
+        prompt = (
+            f"You are analysing a knowledge graph node.\n\n"
+            f"Node: {node_label} (type: {entity_type})\n"
+            f"Description: {node_desc}\n\n"
+            f"Source document excerpts:\n{excerpts}\n\n"
+            "Write a concise 2-4 sentence summary of what this entity represents "
+            "based on the source excerpts. Focus on facts, roles, and relationships."
+        )
+    else:
+        prompt = (
+            f"Describe the entity '{node_label}' (type: {entity_type}) "
+            f"based on this description: {node_desc or 'no description available'}. "
+            "Keep it to 2-3 sentences."
+        )
+
+    summary = f"Summary for {node_label}"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{settings.ollama_cloud_base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.ollama_cloud_api_key}"},
+                json={
+                    "model": settings.ollama_cloud_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 200,
+                    "temperature": 0.3,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            summary = data["choices"][0]["message"]["content"].strip()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"LLM unavailable: {exc}")
+
+    now = int(__import__("time").time() * 1_000_000)
+    await upsert_node_summary(collection_id, node_id, summary, chunk_hash)
+
+    return NodeSummaryResponse(
+        node_id=node_id,
+        summary=summary,
+        chunk_hash=chunk_hash,
+        updated_at=now,
+        from_cache=False,
     )
 
 
@@ -377,6 +608,59 @@ async def remove_edge(
         "before": json.dumps(edge),
         "after": "{}",
     })
+
+
+@router.get("/ner-keywords")
+async def get_ner_keywords(
+    collection_id: str,
+    labels: list[str] = Query(default=[], description="NER labels to count keywords for (e.g. PERSON, LEGISLATION_TITLE). Empty = all labels."),
+    top_n: int = Query(default=30, ge=1, le=200, description="Max keywords to return per label"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Return top keyword frequencies per NER label from chunk ner_tags.
+
+    Response example:
+      {
+        "PERSON": [{"text": "John Smith", "count": 42}, ...],
+        "ORGANIZATION": [...]
+      }
+    """
+    from collections import Counter
+    await _require_collection_access(collection_id, current_user)
+
+    from app.db.lancedb_client import get_chunks_for_collection
+    chunks = await get_chunks_for_collection(collection_id)
+
+    label_set = set(labels) if labels else None
+    counters: dict[str, Counter] = {}
+
+    for chunk in chunks:
+        raw = chunk.get("ner_tags") or "[]"
+        try:
+            tags = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            continue
+        # Count each (label, text) pair once per chunk so the frequency matches
+        # the number of distinct chunks returned by get_chunk_ids_with_ner_keywords.
+        seen_in_chunk: set[tuple[str, str]] = set()
+        for tag in tags:
+            lbl = tag.get("label", "")
+            # Normalise to lowercase — matches the case-insensitive logic in
+            # get_chunk_ids_with_ner_keywords so counts always equal chunk counts.
+            text = tag.get("text", "").strip().lower()
+            if not lbl or not text:
+                continue
+            if label_set is not None and lbl not in label_set:
+                continue
+            key = (lbl, text)
+            if key not in seen_in_chunk:
+                counters.setdefault(lbl, Counter())[text] += 1
+                seen_in_chunk.add(key)
+
+    return {
+        lbl: [{"text": t, "count": c} for t, c in counter.most_common(top_n)]
+        for lbl, counter in sorted(counters.items())
+    }
 
 
 @router.get("/export")

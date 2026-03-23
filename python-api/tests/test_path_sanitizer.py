@@ -1,6 +1,7 @@
 """Tests for the path sanitizer."""
 
 import os
+import tempfile
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -14,13 +15,16 @@ class TestValidateFolderPath:
         from app.core.path_sanitizer import validate_folder_path
         return validate_folder_path
 
-    def test_valid_path_within_allowed_root(self, tmp_path):
+    def test_valid_path_within_allowed_root(self):
         """A real directory under /tmp is allowed when /tmp is in allowed_folder_roots."""
         validate_folder_path = self._import()
-        subdir = tmp_path / "docs"
-        subdir.mkdir()
-        result = validate_folder_path(str(subdir))
-        assert result == subdir.resolve()
+        # Use tempfile.mkdtemp so the path is under the real /tmp tree (resolves
+        # macOS /tmp -> /private/tmp symlink consistently with allowed_folder_roots)
+        with tempfile.TemporaryDirectory(dir=Path("/tmp").resolve()) as td:
+            subdir = Path(td) / "docs"
+            subdir.mkdir()
+            result = validate_folder_path(str(subdir))
+            assert result == subdir.resolve()
 
     def test_nonexistent_path_raises_400(self):
         validate_folder_path = self._import()
@@ -42,25 +46,27 @@ class TestValidateFolderPath:
                 validate_folder_path("/var")
             assert exc_info.value.status_code == 403
 
-    def test_file_instead_of_directory_raises_400(self, tmp_path):
+    def test_file_instead_of_directory_raises_400(self):
         validate_folder_path = self._import()
-        f = tmp_path / "file.txt"
-        f.write_text("hello")
-        with pytest.raises(HTTPException) as exc_info:
-            validate_folder_path(str(f))
-        assert exc_info.value.status_code == 400
+        with tempfile.TemporaryDirectory(dir=Path("/tmp").resolve()) as td:
+            f = Path(td) / "file.txt"
+            f.write_text("hello")
+            with pytest.raises(HTTPException) as exc_info:
+                validate_folder_path(str(f))
+            assert exc_info.value.status_code == 400
 
-    def test_symlink_pointing_outside_allowed_root_raises_403(self, tmp_path):
+    def test_symlink_pointing_outside_allowed_root_raises_403(self):
         validate_folder_path = self._import()
         # Create a symlink inside /tmp pointing to /var (if it exists)
         target = Path("/var")
         if not target.exists():
             pytest.skip("/var does not exist on this system")
-        link = tmp_path / "escape_link"
-        link.symlink_to(target)
-        with pytest.raises(HTTPException) as exc_info:
-            validate_folder_path(str(link))
-        assert exc_info.value.status_code == 403
+        with tempfile.TemporaryDirectory(dir=Path("/tmp").resolve()) as td:
+            link = Path(td) / "escape_link"
+            link.symlink_to(target)
+            with pytest.raises(HTTPException) as exc_info:
+                validate_folder_path(str(link))
+            assert exc_info.value.status_code == 403
 
 
 class TestValidateFileExtension:

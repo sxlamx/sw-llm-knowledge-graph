@@ -14,13 +14,44 @@ const rawBaseQuery = fetchBaseQuery({
   credentials: 'include',
 });
 
+// Serialise the proactive refresh so concurrent requests don't each trigger one.
+let refreshInProgress: Promise<void> | null = null;
+
 const baseQueryWithReauth: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQueryError> = async (
   args,
   api,
   extraOptions
 ) => {
+  // If no token in Redux state, proactively refresh BEFORE making the request
+  // so we never hit the API with a missing token (eliminates page-load 401s).
+  const state = api.getState() as RootState;
+  if (!state.auth.accessToken) {
+    if (!refreshInProgress) {
+      refreshInProgress = (async () => {
+        const refreshResult = await rawBaseQuery(
+          { url: '/auth/refresh', method: 'POST' },
+          api,
+          extraOptions
+        );
+        if (refreshResult.data) {
+          const { access_token } = refreshResult.data as { access_token: string };
+          api.dispatch(setAccessToken(access_token));
+        } else {
+          api.dispatch(logout());
+        }
+      })().finally(() => { refreshInProgress = null; });
+    }
+    await refreshInProgress;
+    // If still no token after refresh the user is not logged in — abort.
+    const afterRefresh = api.getState() as RootState;
+    if (!afterRefresh.auth.accessToken) {
+      return { error: { status: 401, data: 'Unauthorized' } as FetchBaseQueryError };
+    }
+  }
+
   let result = await rawBaseQuery(args, api, extraOptions);
 
+  // Handle mid-session token expiry
   if (result.error?.status === 401) {
     const refreshResult = await rawBaseQuery(
       { url: '/auth/refresh', method: 'POST' },

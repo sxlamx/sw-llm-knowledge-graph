@@ -4,7 +4,7 @@ sse-starlette>=2.0
 google-auth>=2.30
 PyJWT>=2.8
 cryptography>=42.0
-openai>=1.30
+openai>=1.40
 pydantic>=2.7
 pydantic-settings>=2.3
 httpx>=0.27
@@ -13,4 +13,13 @@ aiofiles>=23.0
 tenacity>=8.3
 tiktoken>=0.7
 lancedb>=0.9
-rust-core
+pyarrow>=14.0
+prometheus_client>=0.20
+Pillow>=10.0
+pypdf>=4.0
+spacy>=3.8
+spacy-transformers>=1.3
+torch>=2.0
+# spaCy transformer NER model — install via: python -m spacy download en_core_web_trf
+# or pin directly with the URL below:
+en-core-web-trf @ https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl

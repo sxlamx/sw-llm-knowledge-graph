@@ -23,8 +23,8 @@ class TestJobCostTracker:
     @pytest.mark.asyncio
     async def test_raises_when_budget_exceeded(self, tracker):
         with pytest.raises(BudgetExceededError) as exc_info:
-            # gpt-4o is expensive; 200k input tokens should blow the $1 cap
-            await tracker.record("gpt-4o", input_tokens=200_000, output_tokens=0)
+            # gpt-4o: $0.005/1k input; 201k tokens = $1.005 > $1.00 cap
+            await tracker.record("gpt-4o", input_tokens=201_000, output_tokens=0)
         assert exc_info.value.max_usd == 1.0
 
     @pytest.mark.asyncio

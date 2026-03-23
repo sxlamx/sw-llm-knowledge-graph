@@ -27,11 +27,15 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
 import { useGetCollectionQuery } from '../api/collectionsApi';
+import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import {
   useExportDatasetMutation,
   useStartFineTuneMutation,
   useGetFineTuneStatusQuery,
+  useEvaluateModelsMutation,
   FineTuneExample,
+  EvaluateResponse,
+  ModelMetrics,
 } from '../api/finetuneApi';
 import { useAppDispatch } from '../store';
 import { showSnackbar } from '../store/slices/uiSlice';
@@ -172,6 +176,103 @@ const DatasetPreview: React.FC<{ examples: FineTuneExample[]; total: number }> =
 );
 
 // ---------------------------------------------------------------------------
+// A/B evaluation results panel
+// ---------------------------------------------------------------------------
+
+const MetricsRow: React.FC<{ label: string; m: ModelMetrics; color: string }> = ({ label, m, color }) => (
+  <TableRow>
+    <TableCell sx={{ py: 0.5 }}>
+      <Typography variant="caption" fontWeight={600} color={color}>{label}</Typography>
+    </TableCell>
+    {(['precision', 'recall', 'f1'] as const).map((k) => (
+      <TableCell key={k} align="center" sx={{ py: 0.5 }}>
+        <Chip
+          label={(m[k] * 100).toFixed(1) + '%'}
+          size="small"
+          color={k === 'f1' ? 'primary' : 'default'}
+          variant={k === 'f1' ? 'filled' : 'outlined'}
+          sx={{ height: 20, fontSize: '0.65rem' }}
+        />
+      </TableCell>
+    ))}
+  </TableRow>
+);
+
+const ABEvalPanel: React.FC<{ result: EvaluateResponse }> = ({ result }) => {
+  const ftBetter = result.aggregate.fine_tuned.f1 >= result.aggregate.base.f1;
+
+  return (
+    <Paper sx={{ p: 2 }}>
+      <Stack direction="row" alignItems="center" spacing={1} mb={1}>
+        <Typography variant="subtitle2" fontWeight={600}>A/B Evaluation Results</Typography>
+        <Box flex={1} />
+        <Chip
+          label={`${result.n_samples} samples`}
+          size="small"
+          variant="outlined"
+        />
+        <Chip
+          label={ftBetter ? 'Fine-tuned wins' : 'Base wins'}
+          size="small"
+          color={ftBetter ? 'success' : 'warning'}
+        />
+      </Stack>
+
+      <Divider sx={{ mb: 1.5 }} />
+
+      <Table size="small">
+        <TableHead>
+          <TableRow>
+            <TableCell sx={{ py: 0.5, fontSize: '0.7rem' }}>Model</TableCell>
+            <TableCell align="center" sx={{ py: 0.5, fontSize: '0.7rem' }}>Precision</TableCell>
+            <TableCell align="center" sx={{ py: 0.5, fontSize: '0.7rem' }}>Recall</TableCell>
+            <TableCell align="center" sx={{ py: 0.5, fontSize: '0.7rem' }}>F1</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          <MetricsRow label="Fine-tuned" m={result.aggregate.fine_tuned} color="success.main" />
+          <MetricsRow label="Base" m={result.aggregate.base} color="text.secondary" />
+        </TableBody>
+      </Table>
+
+      <Divider sx={{ my: 1.5 }} />
+
+      <Typography variant="caption" fontWeight={600} color="text.secondary" display="block" mb={0.5}>
+        Per-sample F1 comparison ({result.per_sample.length} chunks)
+      </Typography>
+      <Stack spacing={0.25}>
+        {result.per_sample.map((s) => (
+          <Stack key={s.chunk_id} direction="row" alignItems="center" spacing={1}>
+            <Typography variant="caption" color="text.disabled" sx={{ width: 120, fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {s.chunk_id.slice(0, 12)}…
+            </Typography>
+            <Box flex={1} sx={{ position: 'relative', height: 6, bgcolor: 'action.hover', borderRadius: 1, overflow: 'hidden' }}>
+              <Box sx={{ position: 'absolute', left: 0, top: 0, height: '100%', width: `${s.fine_tuned.f1 * 100}%`, bgcolor: 'success.main', opacity: 0.7, borderRadius: 1 }} />
+            </Box>
+            <Box flex={1} sx={{ position: 'relative', height: 6, bgcolor: 'action.hover', borderRadius: 1, overflow: 'hidden' }}>
+              <Box sx={{ position: 'absolute', left: 0, top: 0, height: '100%', width: `${s.base.f1 * 100}%`, bgcolor: 'text.secondary', opacity: 0.5, borderRadius: 1 }} />
+            </Box>
+            <Typography variant="caption" color={s.fine_tuned.f1 >= s.base.f1 ? 'success.main' : 'warning.main'} sx={{ width: 32, textAlign: 'right', fontSize: '0.6rem' }}>
+              {s.fine_tuned.f1 >= s.base.f1 ? '+FT' : '+B'}
+            </Typography>
+          </Stack>
+        ))}
+      </Stack>
+      <Stack direction="row" spacing={2} mt={0.5}>
+        <Stack direction="row" alignItems="center" spacing={0.5}>
+          <Box sx={{ width: 12, height: 6, bgcolor: 'success.main', opacity: 0.7, borderRadius: 0.5 }} />
+          <Typography variant="caption" color="text.secondary" fontSize="0.6rem">Fine-tuned F1</Typography>
+        </Stack>
+        <Stack direction="row" alignItems="center" spacing={0.5}>
+          <Box sx={{ width: 12, height: 6, bgcolor: 'text.secondary', opacity: 0.5, borderRadius: 0.5 }} />
+          <Typography variant="caption" color="text.secondary" fontSize="0.6rem">Base F1</Typography>
+        </Stack>
+      </Stack>
+    </Paper>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // FineTune page
 // ---------------------------------------------------------------------------
 
@@ -185,10 +286,14 @@ const FineTune: React.FC = () => {
   const [nEpochs, setNEpochs] = useState(3);
   const [maxExamples, setMaxExamples] = useState(5000);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [evalModel, setEvalModel] = useState('');
+  const [evalSamples, setEvalSamples] = useState(20);
+  const [evalResult, setEvalResult] = useState<EvaluateResponse | null>(null);
 
   const { data: collection } = useGetCollectionQuery(collectionId ?? '', { skip: !collectionId });
   const [exportDataset, { data: exportData, isLoading: exporting }] = useExportDatasetMutation();
   const [startFineTune, { isLoading: starting }] = useStartFineTuneMutation();
+  const [evaluateModels, { isLoading: evaluating }] = useEvaluateModelsMutation();
 
   const handleExport = async () => {
     if (!collectionId) return;
@@ -197,6 +302,22 @@ const FineTune: React.FC = () => {
       dispatch(showSnackbar({ message: 'Dataset exported successfully.', severity: 'success' }));
     } catch {
       dispatch(showSnackbar({ message: 'Export failed.', severity: 'error' }));
+    }
+  };
+
+  const handleEvaluate = async () => {
+    if (!collectionId || !evalModel.trim()) return;
+    try {
+      const result = await evaluateModels({
+        collection_id: collectionId,
+        fine_tuned_model: evalModel.trim(),
+        base_model: baseModel,
+        n_samples: evalSamples,
+      }).unwrap();
+      setEvalResult(result);
+      dispatch(showSnackbar({ message: 'Evaluation complete.', severity: 'success' }));
+    } catch {
+      dispatch(showSnackbar({ message: 'Evaluation failed.', severity: 'error' }));
     }
   };
 
@@ -315,6 +436,54 @@ const FineTune: React.FC = () => {
       {activeJobId && (
         <Box sx={{ mb: 2 }}>
           <JobStatusPanel jobId={activeJobId} />
+        </Box>
+      )}
+
+      {/* A/B Quality Evaluation */}
+      <Paper sx={{ p: 2, mb: 2 }}>
+        <Typography variant="subtitle2" fontWeight={600} gutterBottom>A/B Quality Evaluation</Typography>
+        <Divider sx={{ mb: 2 }} />
+        <Alert severity="info" sx={{ mb: 2 }} icon={false}>
+          Compare extraction quality between your fine-tuned model and the base model on a random
+          chunk sample. Ground-truth labels come from existing graph nodes.
+        </Alert>
+        <Stack spacing={2}>
+          <Stack direction="row" spacing={2} alignItems="flex-start">
+            <TextField
+              label="Fine-tuned model ID"
+              placeholder="ft:gpt-4o-mini-2024-07-18:org:kg-extraction:abc123"
+              value={evalModel}
+              onChange={(e) => setEvalModel(e.target.value)}
+              size="small"
+              sx={{ flex: 3 }}
+              helperText="From the job status panel above (fine_tuned_model field)"
+            />
+            <TextField
+              label="Samples"
+              type="number"
+              value={evalSamples}
+              onChange={(e) => setEvalSamples(Number(e.target.value))}
+              size="small"
+              inputProps={{ min: 5, max: 100 }}
+              sx={{ flex: 1 }}
+            />
+          </Stack>
+          <Box>
+            <Button
+              variant="outlined"
+              startIcon={evaluating ? <CircularProgress size={16} /> : <CompareArrowsIcon />}
+              onClick={handleEvaluate}
+              disabled={evaluating || !evalModel.trim()}
+            >
+              Run Evaluation
+            </Button>
+          </Box>
+        </Stack>
+      </Paper>
+
+      {evalResult && (
+        <Box sx={{ mb: 2 }}>
+          <ABEvalPanel result={evalResult} />
         </Box>
       )}
     </Box>

@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+/// <reference types="vitest" />
 
 export default defineConfig({
   plugins: [react()],
@@ -28,8 +29,14 @@ export default defineConfig({
   server: {
     port: 5333,
     proxy: {
-      '/api': 'http://localhost:8000',
-      '/ws': { target: 'ws://localhost:8000', ws: true },
+      '/api': 'http://localhost:8333',
+      '/ws': { target: 'ws://localhost:8333', ws: true },
     },
+  },
+  test: {
+    globals: true,
+    environment: 'jsdom',
+    setupFiles: ['./src/test-setup.ts'],
+    css: false,
   },
 });

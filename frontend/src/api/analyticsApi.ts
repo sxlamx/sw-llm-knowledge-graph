@@ -13,6 +13,19 @@ export interface AnalyticsResponse {
   communities: Record<string, string>;
 }
 
+export interface ClusterTopic {
+  id: number;
+  topic: string;
+  node_ids: string[];
+  size: number;
+  color: string;
+}
+
+export interface ClusterTopicsResponse {
+  clusters: ClusterTopic[];
+  total_clusters: number;
+}
+
 export interface AnalyticsSummary {
   collection_id: string;
   node_count: number;
@@ -40,6 +53,10 @@ export const analyticsApi = api.injectEndpoints({
       query: ({ collection_id }) =>
         `/analytics/summary?collection_id=${collection_id}`,
     }),
+    getClusterTopics: builder.query<ClusterTopicsResponse, { collection_id: string }>({
+      query: ({ collection_id }) =>
+        `/analytics/cluster-topics?collection_id=${collection_id}`,
+    }),
   }),
 });
 
@@ -48,4 +65,5 @@ export const {
   useGetBetweennessQuery,
   useGetCommunitiesQuery,
   useGetAnalyticsSummaryQuery,
+  useGetClusterTopicsQuery,
 } = analyticsApi;

@@ -17,6 +17,7 @@ from app.llm.embedder import embed_texts
 from app.llm.extractor import (
     generate_doc_summary, generate_contextual_prefix, extract_from_chunk,
 )
+from app.llm.ner_tagger import tag_chunk, tags_to_json
 from app.pipeline.job_manager import get_job_manager
 from app.models.schemas import IngestOptions
 from app.services.cost_tracker import create_tracker, remove_tracker, BudgetExceededError
@@ -111,12 +112,9 @@ async def run_ingest_pipeline(
                 },
             )
 
-            # Extract text
-            extracted = await loop.run_in_executor(
-                None,
-                lambda p=file_path, ft=entry.get("file_type", "unknown"): engine.extract_text(p, ft),
-            )
-            doc_data = json.loads(extracted)
+            # Extract text — pymupdf for PDFs (handles CID/Identity-H encoding), Rust for others
+            from app.core.pdf_extractor import extract_text_smart
+            doc_data = await extract_text_smart(file_path, entry.get("file_type", "unknown"), engine)
             raw_text = doc_data.get("raw_text", "")
 
             # Generate doc summary
@@ -185,6 +183,7 @@ async def run_ingest_pipeline(
                     "topics": topics_list,
                     "embedding": embeddings[i] if i < len(embeddings) else [0.0] * settings.embedding_dimension,
                     "created_at": int(datetime.utcnow().timestamp() * 1_000_000),
+                    "ner_tags": "[]",
                 }
                 chunk_records.append(chunk_record)
                 all_chunks.append(chunk_record)
@@ -210,13 +209,21 @@ async def run_ingest_pipeline(
                 except Exception as exc:
                     logger.warning(f"Multimodal extraction failed for {file_path}: {exc}")
 
-            # Entity/relationship extraction (if enabled)
+            # Entity/relationship extraction + NER tagging
             if options.extract_entities:
-                extracted_nodes, extracted_edges = await _extract_graph(
+                # LLM extraction (returns ner_spans from same call) + spaCy NER
+                extracted_nodes, extracted_edges, ner_tags_map = await _extract_graph(
                     chunk_records, doc_uuid, collection_id, summary, validator
                 )
+                for chunk in chunk_records:
+                    chunk["ner_tags"] = ner_tags_map.get(chunk["id"], "[]")
                 all_nodes.extend(extracted_nodes)
                 all_edges.extend(extracted_edges)
+            else:
+                # spaCy-only NER (no LLM call)
+                ner_tags_map = await _run_ner_only(chunk_records)
+                for chunk in chunk_records:
+                    chunk["ner_tags"] = ner_tags_map.get(chunk["id"], "[]")
 
             # Flush chunks every 100
             if len(all_chunks) >= 100:
@@ -285,25 +292,44 @@ async def run_ingest_pipeline(
     remove_tracker(job_id)
 
 
+async def _run_ner_only(chunk_records: list[dict]) -> dict[str, str]:
+    """Run spaCy NER on chunks without a LLM call (used when extract_entities=False)."""
+    async def _tag_one(chunk: dict) -> tuple[str, str]:
+        tags = await tag_chunk(chunk["text"], [])
+        return chunk["id"], tags_to_json(tags)
+
+    ner_map: dict[str, str] = {}
+    results = await asyncio.gather(*[_tag_one(c) for c in chunk_records], return_exceptions=True)
+    for r in results:
+        if isinstance(r, Exception):
+            continue
+        cid, tags_json = r
+        ner_map[cid] = tags_json
+    return ner_map
+
+
 async def _extract_graph(
     chunk_records: list[dict],
     doc_id: str,
     collection_id: str,
     doc_summary: str,
     validator,
-) -> tuple[list[dict], list[dict]]:
-    """Run LLM entity extraction on a batch of chunks and validate with Rust ontology validator."""
+) -> tuple[list[dict], list[dict], dict[str, str]]:
+    """Run LLM entity extraction + NER tagging on a batch of chunks.
+
+    Returns (nodes, edges, ner_tags_map) where ner_tags_map maps chunk_id → ner_tags JSON string.
+    """
     nodes: list[dict] = []
     edges: list[dict] = []
 
     # Batch: one LLM call per chunk (with concurrency limit)
-    async def _extract_one(chunk: dict) -> tuple[list[dict], list[dict]]:
+    async def _extract_one(chunk: dict) -> tuple[list[dict], list[dict], str]:
         async with _limiter:
             try:
                 result = await extract_from_chunk(chunk["text"])
             except Exception as e:
                 logger.warning(f"Extraction failed: {e}")
-                return [], []
+                return [], [], "[]"
 
             # Validate with Rust ontology validator
             raw_entities = result.get("entities", [])
@@ -373,19 +399,31 @@ async def _extract_graph(
                         "chunk_id": chunk["id"],
                     })
 
-            return chunk_nodes, chunk_edges
+            # NER tagging — reuse ner_spans from the same LLM call + spaCy
+            try:
+                llm_ner_spans = result.get("ner_spans", [])
+                ner_tags = await tag_chunk(chunk["text"], llm_ner_spans)
+                chunk_ner_json = tags_to_json(ner_tags)
+            except Exception as e:
+                logger.warning(f"NER tagging failed for chunk {chunk['id']}: {e}")
+                chunk_ner_json = "[]"
+
+            return chunk_nodes, chunk_edges, chunk_ner_json
 
     tasks = [asyncio.create_task(_extract_one(c)) for c in chunk_records]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    for r in results:
+    ner_tags_map: dict[str, str] = {}
+    for chunk, r in zip(chunk_records, results):
         if isinstance(r, Exception):
+            ner_tags_map[chunk["id"]] = "[]"
             continue
-        n, e = r
+        n, e, ner_json = r
         nodes.extend(n)
         edges.extend(e)
+        ner_tags_map[chunk["id"]] = ner_json
 
-    return nodes, edges
+    return nodes, edges, ner_tags_map
 
 
 async def _flush_chunks(

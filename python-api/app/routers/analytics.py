@@ -1,11 +1,17 @@
 """Graph analytics router — PageRank, betweenness centrality, community detection."""
 
+import asyncio
+from collections import defaultdict
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.auth.middleware import get_current_user
 from app.db.lancedb_client import get_collection, list_graph_nodes, list_graph_edges
-from app.services.analytics_service import pagerank, betweenness_centrality, louvain_communities
+from app.services.analytics_service import (
+    pagerank, betweenness_centrality, louvain_communities,
+    extract_cluster_topic, CLUSTER_COLORS,
+)
 
 router = APIRouter()
 
@@ -118,6 +124,49 @@ async def get_communities(
         scores=scores,
         communities=communities,
     )
+
+
+@router.get("/cluster-topics")
+async def get_cluster_topics(
+    collection_id: str = Query(...),
+    max_clusters: int = Query(20, le=50),
+    current_user: dict = Depends(get_current_user),
+):
+    """Run Louvain community detection and return LLM-named topic per cluster."""
+    await _require_access(collection_id, current_user)
+    nodes = await list_graph_nodes(collection_id)
+    edges = await list_graph_edges(collection_id)
+
+    if not nodes:
+        return {"clusters": [], "total_clusters": 0}
+
+    communities = louvain_communities(nodes, edges)
+    node_labels = {n["id"]: n.get("label", n["id"]) for n in nodes}
+
+    # Group node_ids by community
+    comm_nodes: dict[str, list[str]] = defaultdict(list)
+    for nid, cid in communities.items():
+        comm_nodes[cid].append(nid)
+
+    total_clusters = len(comm_nodes)
+    sorted_comms = sorted(comm_nodes.items(), key=lambda x: -len(x[1]))[:max_clusters]
+
+    async def make_cluster(i: int, nids: list[str]) -> dict:
+        labels = [node_labels.get(nid, nid) for nid in nids]
+        topic = await extract_cluster_topic(labels)
+        return {
+            "id": i,
+            "topic": topic,
+            "node_ids": nids,
+            "size": len(nids),
+            "color": CLUSTER_COLORS[i % len(CLUSTER_COLORS)],
+        }
+
+    clusters = await asyncio.gather(*[
+        make_cluster(i, nids) for i, (_, nids) in enumerate(sorted_comms)
+    ])
+
+    return {"clusters": list(clusters), "total_clusters": total_clusters}
 
 
 @router.get("/summary")

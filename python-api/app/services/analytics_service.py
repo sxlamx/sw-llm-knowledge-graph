@@ -143,10 +143,21 @@ def louvain_communities(
     if total_weight == 0:
         return {nid: nid for nid in node_ids}
 
+    m = total_weight  # single-counted edge weight sum
+
+    # Precompute weighted degree per node
+    degree: dict[str, float] = {nid: sum(adj[nid].values()) for nid in node_ids}
+
     # Initialise: each node in its own community
     community: dict[str, str] = {nid: nid for nid in node_ids}
 
-    # Greedy modularity improvement
+    # Sum of degrees per community (updated incrementally)
+    comm_degree_sum: dict[str, float] = {nid: degree[nid] for nid in node_ids}
+
+    # Greedy modularity improvement (Louvain phase 1)
+    # ΔQ of moving node i into community c:
+    #   ΔQ = kic/m  -  ki * Σk(c) / (2 * m²)
+    # where kic = edge weight from i to c, Σk(c) = sum of degrees in c (excl. i)
     improved = True
     iterations = 0
     while improved and iterations < 20:
@@ -154,30 +165,87 @@ def louvain_communities(
         iterations += 1
         for nid in node_ids:
             cur_comm = community[nid]
-            # Community weights
+            ki = degree[nid]
+
+            # Weighted edges from nid to each neighbouring community
             comm_weights: dict[str, float] = defaultdict(float)
             for nb, w in adj[nid].items():
                 comm_weights[community[nb]] += w
 
-            # Current modularity gain if we move nid out
+            # Temporarily remove nid's degree from its current community
+            comm_degree_sum[cur_comm] -= ki
+
             best_comm = cur_comm
-            best_gain = 0.0
-            ki = sum(adj[nid].values())
+            # Baseline: gain of re-inserting into the current community
+            kic_cur = comm_weights.get(cur_comm, 0.0)
+            sigma_cur = comm_degree_sum.get(cur_comm, 0.0)
+            best_gain = kic_cur / m - ki * sigma_cur / (2.0 * m * m)
 
             for cid, kic in comm_weights.items():
                 if cid == cur_comm:
                     continue
-                # Simplified modularity delta
-                gain = kic / total_weight - ki / (2 * total_weight)
+                sigma_c = comm_degree_sum.get(cid, 0.0)
+                gain = kic / m - ki * sigma_c / (2.0 * m * m)
                 if gain > best_gain:
                     best_gain = gain
                     best_comm = cid
 
             if best_comm != cur_comm:
                 community[nid] = best_comm
+                comm_degree_sum[best_comm] = comm_degree_sum.get(best_comm, 0.0) + ki
                 improved = True
+            else:
+                # Restore nid's degree to its original community
+                comm_degree_sum[cur_comm] += ki
 
-    # Normalise community names to integers
+    # Normalise community names to sequential integers
     unique_comms = sorted(set(community.values()))
     comm_map = {c: str(i) for i, c in enumerate(unique_comms)}
     return {nid: comm_map[community[nid]] for nid in node_ids}
+
+
+# ---------------------------------------------------------------------------
+# LLM cluster topic extraction
+# ---------------------------------------------------------------------------
+
+CLUSTER_COLORS = [
+    "#E53935", "#8E24AA", "#1E88E5", "#00ACC1",
+    "#43A047", "#F4511E", "#FB8C00", "#FDD835",
+    "#6D4C41", "#546E7A", "#00897B", "#3949AB",
+]
+
+
+async def extract_cluster_topic(node_labels: list[str]) -> str:
+    """Call Ollama Cloud to produce a 3-5 word topic name for a cluster."""
+    import httpx
+    from app.config import get_settings
+
+    settings = get_settings()
+    sample = node_labels[:30]
+    prompt = (
+        f"These entities belong to the same topic cluster:\n{', '.join(sample)}\n\n"
+        "Name this cluster's topic in 3-5 words. "
+        "Respond with only the topic name, nothing else."
+    )
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                f"{settings.ollama_cloud_base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.ollama_cloud_api_key}"},
+                json={
+                    "model": settings.ollama_cloud_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 20,
+                    "temperature": 0.3,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"].strip()
+    except Exception as exc:
+        logger.warning(f"Cluster topic extraction failed: {exc}")
+        # Fallback: most frequent non-trivial words in the labels
+        from collections import Counter
+        words = " ".join(sample).split()
+        top = Counter(w.lower() for w in words if len(w) > 3).most_common(3)
+        return " / ".join(w for w, _ in top) if top else "Unknown Topic"

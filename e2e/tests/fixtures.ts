@@ -8,33 +8,29 @@
 import { test as base, Page, expect } from '@playwright/test';
 
 export const DEV_TOKEN = process.env.E2E_DEV_TOKEN ?? 'dev_token_e2e';
-export const API_BASE  = process.env.E2E_API_BASE ?? 'http://localhost:8000/api/v1';
+export const API_BASE  = process.env.E2E_API_BASE ?? 'http://localhost:8333/api/v1';
 
 // ---------------------------------------------------------------------------
 // Auth helper: inject a dev JWT directly into Redux store via localStorage
 // ---------------------------------------------------------------------------
 
 export async function loginWithDevToken(page: Page): Promise<void> {
-  // The frontend reads `persist:auth` from localStorage (Redux Persist).
-  // We write a minimal state that satisfies RequireAuth: accessToken + user.
-  const authState = JSON.stringify({
-    accessToken: DEV_TOKEN,
-    refreshToken: 'dev_refresh_e2e',
-    user: {
-      id: 'dev-user',
-      email: 'e2e@example.com',
-      name: 'E2E User',
-      picture: '',
-    },
-    isLoading: false,
-    error: null,
+  // authSlice initialises from `kg_user` in localStorage on import.
+  // Write it before the first page load so the Redux store hydrates correctly.
+  const user = JSON.stringify({
+    id: 'dev-user',
+    email: 'e2e@example.com',
+    name: 'E2E User',
+    picture: '',
   });
 
   await page.goto('/');
   await page.evaluate(
     ([key, value]) => localStorage.setItem(key, value),
-    ['persist:auth', JSON.stringify({ auth: authState, _persist: '{"version":-1,"rehydrated":true}' })],
+    ['kg_user', user],
   );
+  // Reload so the app bootstraps with the persisted user
+  await page.reload();
 }
 
 // ---------------------------------------------------------------------------

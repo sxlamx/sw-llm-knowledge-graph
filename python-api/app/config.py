@@ -4,22 +4,29 @@ from pathlib import Path
 from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Resolve .env from repo root (two levels above this file: app/ → python-api/ → repo root)
+_REPO_ROOT = Path(__file__).parent.parent.parent
+_ENV_FILE = _REPO_ROOT / ".env"
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=str(_ENV_FILE),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     # Ollama Cloud (LLM chat completions)
     ollama_cloud_base_url: str = "https://api.ollama.com/v1"
     ollama_cloud_api_key: str = ""
     ollama_cloud_model: str = "llama3.2"
 
-    # Local Ollama (embeddings)
-    ollama_embed_base_url: str = "http://localhost:11434"
-    ollama_embed_model: str = "qwen3-embedding"
-    ollama_embed_dimensions: int = 1536
+    # HuggingFace local embeddings (sentence-transformers)
+    hf_embed_model: str = "Qwen/Qwen3-Embedding-0.6B"
+    hf_token: str = ""
 
     # Embeddings
-    embedding_dimension: int = 1536
+    embedding_dimension: int = 1024
 
     # Storage paths
     lancedb_path: str = "/data/lancedb"
@@ -29,6 +36,7 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = ""
 
+
     # JWT
     jwt_private_key_path: str = "./secrets/jwt_private_key.pem"
     jwt_public_key_path: str = "./secrets/jwt_public_key.pem"
@@ -36,10 +44,17 @@ class Settings(BaseSettings):
     jwt_refresh_expiry_days: int = 7
 
     # Frontend
-    frontend_origin: str = "http://localhost:3000"
+    frontend_origin: str = "http://localhost:5333"
 
-    # File ingestion
-    allowed_folder_roots: list[str] = ["/data/documents"]
+    # Cookie security — set True in production (HTTPS); False for local HTTP dev
+    cookie_secure: bool = False
+
+    # File ingestion — comma-separated string to avoid pydantic-settings JSON parse issues
+    allowed_folder_roots: str = "/data/documents"
+
+    @property
+    def allowed_folder_roots_list(self) -> list[str]:
+        return [p.strip() for p in self.allowed_folder_roots.split(",") if p.strip()]
     max_file_size_mb: int = 100
 
     # Rate limiting

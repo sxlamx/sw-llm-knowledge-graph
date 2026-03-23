@@ -40,11 +40,43 @@ export interface NodeDetail extends GraphNode {
   neighbors?: GraphNode[];
 }
 
+export interface NodeSummary {
+  node_id: string;
+  summary: string;
+  chunk_hash: string;
+  updated_at?: number;
+  from_cache: boolean;
+}
+
 export const graphApi = api.injectEndpoints({
   endpoints: (builder) => ({
-    getGraphData: builder.query<GraphData, { collection_id: string; page?: number; depth?: number }>({
-      query: ({ collection_id, page = 0, depth = 2 }) =>
-        `/graph/subgraph?collection_id=${collection_id}&page=${page}&depth=${depth}`,
+    getGraphData: builder.query<GraphData, {
+      collection_id: string;
+      page?: number;
+      depth?: number;
+      date_from?: string;
+      date_to?: string;
+      doc_id?: string;
+      entity_type_filters?: string[];
+      ner_label_filters?: string[];
+      ner_keyword_filters?: string[];
+    }>({
+      query: ({ collection_id, page = 0, depth = 2, date_from, date_to, doc_id, entity_type_filters, ner_label_filters, ner_keyword_filters }) => {
+        let url = `/graph/subgraph?collection_id=${collection_id}&page=${page}&depth=${depth}`;
+        if (date_from) url += `&date_from=${encodeURIComponent(date_from)}`;
+        if (date_to) url += `&date_to=${encodeURIComponent(date_to)}`;
+        if (doc_id) url += `&doc_id=${encodeURIComponent(doc_id)}`;
+        if (entity_type_filters?.length) {
+          entity_type_filters.forEach(f => { url += `&entity_type_filters=${encodeURIComponent(f)}`; });
+        }
+        if (ner_label_filters?.length) {
+          ner_label_filters.forEach(f => { url += `&ner_label_filters=${encodeURIComponent(f)}`; });
+        }
+        if (ner_keyword_filters?.length) {
+          ner_keyword_filters.forEach(f => { url += `&ner_keyword_filters=${encodeURIComponent(f)}`; });
+        }
+        return url;
+      },
       providesTags: (_result, _error, { collection_id }) => [
         { type: 'GraphNode', id: collection_id },
       ],
@@ -90,6 +122,21 @@ export const graphApi = api.injectEndpoints({
       query: ({ collection_id, format }) =>
         `/graph/export?collection_id=${collection_id}&format=${format}`,
     }),
+    getNodeSummary: builder.query<NodeSummary, { node_id: string; collection_id: string; force?: boolean }>({
+      query: ({ node_id, collection_id, force = false }) =>
+        `/graph/nodes/${node_id}/summary?collection_id=${collection_id}${force ? '&force=true' : ''}`,
+      providesTags: (_result, _error, { node_id }) => [{ type: 'GraphNode', id: `summary-${node_id}` }],
+    }),
+    getNerKeywords: builder.query<
+      Record<string, Array<{ text: string; count: number }>>,
+      { collection_id: string; labels?: string[]; top_n?: number }
+    >({
+      query: ({ collection_id, labels = [], top_n = 30 }) => {
+        let url = `/graph/ner-keywords?collection_id=${collection_id}&top_n=${top_n}`;
+        labels.forEach(l => { url += `&labels=${encodeURIComponent(l)}`; });
+        return url;
+      },
+    }),
   }),
 });
 
@@ -101,4 +148,6 @@ export const {
   useCreateGraphEdgeMutation,
   useDeleteGraphEdgeMutation,
   useLazyExportGraphQuery,
+  useGetNodeSummaryQuery,
+  useGetNerKeywordsQuery,
 } = graphApi;

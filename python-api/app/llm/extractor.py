@@ -11,15 +11,32 @@ from app.config import get_settings
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
-EXTRACTION_PROMPT = """You are a knowledge graph extraction system. Extract entities and relationships from the text.
+EXTRACTION_PROMPT = """You are a knowledge graph extraction system. Extract entities, relationships, and named entity spans from the text.
 
 ALLOWED ENTITY TYPES: Person, Organization, Location, Concept, Event
 
+LEGAL NER LABELS (for ner_spans only):
+- LEGISLATION_TITLE: Full act or statute name (e.g. "Air Navigation Act 1966", "Companies Act")
+- LEGISLATION_REFERENCE: Section/clause citations (e.g. "Section 42(1)", "s 12", "Art. 3")
+- STATUTE_SECTION: Section headings or numbered divisions within the document
+- COURT_CASE: Short-form case name only (e.g. "ABC v DEF", "Re Smith")
+- CASE_CITATION: Formatted case citation with year and court (e.g. "[2022] SGCA 1", "(2019) 1 SLR 100")
+- JURISDICTION: Governing jurisdiction (e.g. "Singapore", "Malaysia")
+- LEGAL_CONCEPT: Defined legal terms (e.g. "mens rea", "vicarious liability", "promissory estoppel")
+- DEFINED_TERM: Terms explicitly defined in the text, usually in quotes or parentheses
+- COURT: Name of a court or tribunal (e.g. "Court of Appeal", "High Court", "Industrial Arbitration Court")
+- JUDGE: Name of a judge, justice, or magistrate (e.g. "Justice Chan Sek Keong", "Lord Bingham CJ")
+- LAWYER: Name of advocate, solicitor, or counsel (e.g. "Mr Tan Ah Kow (instructed counsel)")
+- PETITIONER: Initiating party — applicant, appellant, claimant, or plaintiff by name
+- RESPONDENT: Opposing party — defendant or respondent by name
+- WITNESS: Name of a witness giving testimony in the proceedings
+
 Rules:
-1. Only use entity types from the list above.
+1. Only use entity types from the ALLOWED ENTITY TYPES list for the entities array.
 2. Each relationship must have valid domain and range.
 3. Confidence should reflect extraction certainty (0.0-1.0).
-4. Return ONLY valid JSON matching the schema.
+4. For ner_spans: use EXACT text from the chunk (copy verbatim, do not paraphrase).
+5. Return ONLY valid JSON matching the schema.
 
 TEXT:
 {chunk_text}
@@ -45,7 +62,14 @@ JSON SCHEMA:
     }}
   ],
   "topics": ["string"],
-  "summary": "string"
+  "summary": "string",
+  "ner_spans": [
+    {{
+      "text": "string",
+      "label": "string",
+      "confidence": 0.0
+    }}
+  ]
 }}
 """
 
@@ -70,7 +94,7 @@ async def extract_from_chunk(chunk_text: str) -> dict:
                         }
                     ],
                     "temperature": 0.1,
-                    "max_tokens": 2000,
+                    "max_tokens": 3000,
                 },
                 headers={"Authorization": f"Bearer {settings.ollama_cloud_api_key}"},
             )

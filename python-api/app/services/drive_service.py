@@ -159,8 +159,27 @@ async def run_drive_ingest_pipeline(
             fid = file_meta["id"]
             fname = file_meta.get("name", fid)
             mime = file_meta.get("mimeType", "")
+            current_hash = drive_hash(file_meta)
+
             jm.emit(job_id, {"type": "progress", "job_id": job_id, "processed": processed,
                               "total": total, "current_file": fname, "progress": processed / max(total, 1)})
+
+            # Incremental sync: skip file if it hasn't changed since last ingest
+            try:
+                from app.db.lancedb_client import get_document_by_drive_file_id
+                existing_doc = await get_document_by_drive_file_id(fid, collection_id)
+                if existing_doc:
+                    existing_meta = json.loads(existing_doc.get("metadata", "{}")) if isinstance(existing_doc.get("metadata"), str) else {}
+                    if existing_meta.get("drive_hash") == current_hash:
+                        logger.debug(f"Drive file unchanged, skipping: {fname} ({fid})")
+                        processed += 1
+                        await update_ingest_job(
+                            job_id,
+                            {"processed_docs": processed, "progress": processed / max(total, 1)},
+                        )
+                        continue
+            except Exception as e:
+                logger.debug(f"Hash check skipped for {fname}: {e}")
 
             try:
                 content = await download_drive_file(access_token, fid, mime)
@@ -191,7 +210,7 @@ async def run_drive_ingest_pipeline(
                     "doc_summary": summary,
                     "metadata": json.dumps({
                         "drive_file_id": fid,
-                        "drive_hash": drive_hash(file_meta),
+                        "drive_hash": current_hash,
                         "modified_time": file_meta.get("modifiedTime"),
                     }),
                 })

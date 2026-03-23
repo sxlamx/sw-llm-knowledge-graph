@@ -26,8 +26,15 @@ interface Props {
   graphData: GraphData | undefined;
   highlightedNodeIds?: string[];
   onNodeClick: (node: GraphNode) => void;
+  onNodeHover?: (node: GraphNode | null) => void;
   /** node_id → normalised score [0, 1]; scales node radius when provided */
   analyticsScores?: Record<string, number>;
+  /** node_id → list of viewer names currently viewing that node */
+  nodeViewers?: Record<string, string[]>;
+  /** node_id → hex color (cluster coloring mode) */
+  clusterColors?: Record<string, string>;
+  /** node_id → cluster topic label (only representative nodes have an entry) */
+  nodeClusterLabels?: Record<string, string>;
   width?: number;
   height?: number;
 }
@@ -39,29 +46,36 @@ const ForceGraph: React.FC<Props> = ({
   graphData,
   highlightedNodeIds = [],
   onNodeClick,
+  onNodeHover,
   analyticsScores,
+  nodeViewers,
+  clusterColors,
+  nodeClusterLabels,
   width,
   height,
 }) => {
   const fgRef = useRef<ReturnType<typeof ForceGraph2D> | null>(null);
 
-  const nodes: ForceGraphNode[] = (graphData?.nodes ?? []).slice(0, MAX_NODES);
+  // Spread each object so react-force-graph-2d can mutate them (Redux freezes state objects)
+  const nodes: ForceGraphNode[] = (graphData?.nodes ?? []).slice(0, MAX_NODES).map((n) => ({ ...n }));
   const nodeIds = new Set(nodes.map((n) => n.id));
   const links: ForceGraphLink[] = (graphData?.edges ?? [])
     .filter((e) => nodeIds.has(e.source) && nodeIds.has(e.target))
-    .slice(0, MAX_EDGES);
+    .slice(0, MAX_EDGES)
+    .map((e) => ({ ...e }));
 
   const getNodeColor = useCallback(
     (node: object) => {
       const n = node as ForceGraphNode;
       if (highlightedNodeIds.length > 0) {
         return highlightedNodeIds.includes(n.id)
-          ? (ENTITY_TYPE_COLORS[n.entity_type] ?? '#888')
+          ? (clusterColors?.[n.id] ?? ENTITY_TYPE_COLORS[n.entity_type] ?? '#888')
           : '#ccc';
       }
+      if (clusterColors?.[n.id]) return clusterColors[n.id];
       return ENTITY_TYPE_COLORS[n.entity_type] ?? '#888';
     },
-    [highlightedNodeIds]
+    [highlightedNodeIds, clusterColors]
   );
 
   const getLinkColor = useCallback(
@@ -90,6 +104,58 @@ const ForceGraph: React.FC<Props> = ({
     [analyticsScores]
   );
 
+  // Draw presence ring and/or cluster topic label
+  const nodeCanvasObject = useCallback(
+    (node: object, ctx: CanvasRenderingContext2D, globalScale: number) => {
+      const n = node as ForceGraphNode;
+      const viewers = nodeViewers?.[n.id];
+      const clusterLabel = nodeClusterLabels?.[n.id];
+
+      if (!viewers?.length && !clusterLabel) return;
+
+      const r = (5 * (analyticsScores ? 1 + (analyticsScores[n.id] ?? 0) * 8 : 1)) / Math.sqrt(globalScale);
+      const x = n.x ?? 0;
+      const y = n.y ?? 0;
+
+      ctx.save();
+
+      // Presence ring (other viewers)
+      if (viewers?.length) {
+        ctx.beginPath();
+        ctx.arc(x, y, r + 3, 0, 2 * Math.PI);
+        ctx.strokeStyle = '#FF9800';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        const badge = viewers.length === 1 ? viewers[0][0] : `${viewers.length}`;
+        const fontSize = Math.max(4, 8 / globalScale);
+        ctx.font = `bold ${fontSize}px Sans-Serif`;
+        ctx.fillStyle = '#FF9800';
+        ctx.textAlign = 'center';
+        ctx.fillText(badge, x, y - r - 4);
+      }
+
+      // Cluster topic label
+      if (clusterLabel) {
+        const fontSize = Math.max(6, 10 / globalScale);
+        ctx.font = `bold ${fontSize}px Sans-Serif`;
+        ctx.fillStyle = clusterColors?.[n.id] ?? '#444';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        // White background pill
+        const textWidth = ctx.measureText(clusterLabel).width;
+        const pad = 2 / globalScale;
+        ctx.fillStyle = 'rgba(255,255,255,0.75)';
+        ctx.fillRect(x - textWidth / 2 - pad, y + r + 2, textWidth + pad * 2, fontSize + pad * 2);
+        ctx.fillStyle = clusterColors?.[n.id] ?? '#333';
+        ctx.fillText(clusterLabel, x, y + r + 2 + pad);
+      }
+
+      ctx.restore();
+    },
+    [nodeViewers, analyticsScores, nodeClusterLabels, clusterColors]
+  );
+
   return (
     <ForceGraph2D
       ref={fgRef as React.MutableRefObject<null>}
@@ -101,6 +167,9 @@ const ForceGraph: React.FC<Props> = ({
       linkColor={getLinkColor}
       linkWidth={(l: object) => Math.max((l as ForceGraphLink).weight * 2, 0.5)}
       onNodeClick={(node: object) => onNodeClick(node as GraphNode)}
+      onNodeHover={onNodeHover ? (node: object | null) => onNodeHover(node as GraphNode | null) : undefined}
+      nodeCanvasObjectMode={() => (nodeViewers || nodeClusterLabels ? 'after' : undefined)}
+      nodeCanvasObject={nodeViewers || nodeClusterLabels ? nodeCanvasObject : undefined}
       width={width}
       height={height}
       nodeRelSize={5}
@@ -111,4 +180,4 @@ const ForceGraph: React.FC<Props> = ({
   );
 };
 
-export default ForceGraph;
+export default React.memo(ForceGraph);

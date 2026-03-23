@@ -40,13 +40,18 @@ def mock_settings(monkeypatch):
         jwt_expiry_minutes=10,
         jwt_refresh_expiry_days=7,
         frontend_origin="http://localhost:3000",
-        allowed_folder_roots=["/tmp"],
+        allowed_folder_roots="/tmp",
         max_file_size_mb=10,
         rate_limit_per_user=60,
         rate_limit_window_seconds=60,
         rust_log="error",
     )
     monkeypatch.setattr("app.config.get_settings", lambda: test_settings)
+    # Also patch module-level settings captured at import time
+    monkeypatch.setattr("app.db.lancedb_client.settings", test_settings)
+    monkeypatch.setattr("app.auth.jwt.settings", test_settings)
+    monkeypatch.setattr("app.core.path_sanitizer.settings", test_settings)
+    monkeypatch.setattr("app.routers.auth.settings", test_settings)
     return test_settings
 
 

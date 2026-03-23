@@ -51,7 +51,7 @@ def validate_folder_path(folder_path: str) -> Path:
     if not canonical.is_dir():
         raise HTTPException(status_code=400, detail="folder_path must point to a directory")
 
-    allowed_roots = [Path(r).resolve() for r in settings.allowed_folder_roots]
+    allowed_roots = [Path(r).resolve() for r in settings.allowed_folder_roots_list]
     if not any(
         _path_is_within(canonical, root) for root in allowed_roots
     ):

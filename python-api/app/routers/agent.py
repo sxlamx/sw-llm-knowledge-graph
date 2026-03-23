@@ -7,7 +7,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.auth.middleware import get_current_user
-from app.db.lancedb_client import get_collection
+from app.db.lancedb_client import get_collection, list_graph_nodes, list_graph_edges
+from app.services.agent_service import run_agent
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -40,8 +41,6 @@ async def agent_query(
         raise HTTPException(status_code=404, detail="Collection not found")
     if collection.get("user_id") != current_user["id"]:
         raise HTTPException(status_code=403, detail="Access denied")
-
-    from app.services.agent_service import run_agent
 
     async def event_stream():
         try:
@@ -79,8 +78,6 @@ async def agent_status(
         raise HTTPException(status_code=404, detail="Collection not found")
     if collection.get("user_id") != current_user["id"]:
         raise HTTPException(status_code=403, detail="Access denied")
-
-    from app.db.lancedb_client import list_graph_nodes, list_graph_edges
 
     nodes = await list_graph_nodes(collection_id)
     edges = await list_graph_edges(collection_id)

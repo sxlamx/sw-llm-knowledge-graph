@@ -33,6 +33,13 @@ dist/
 # Docker
 .dockerignore
 
+# Data (local storage — not committed)
+data/
+.data/
+
+# Local MCP tool config (contains machine-specific paths)
+.mcp.json
+
 # Secrets
 secrets/
 !secrets/.gitkeep

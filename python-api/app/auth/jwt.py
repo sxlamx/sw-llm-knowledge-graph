@@ -113,3 +113,7 @@ def refresh_token_rotated(old_jti: Optional[str]) -> str:
     if old_jti:
         revoke_token(old_jti)
     return str(uuid.uuid4())
+
+
+# Alias used by ws.py and middleware
+decode_access_token = verify_token
