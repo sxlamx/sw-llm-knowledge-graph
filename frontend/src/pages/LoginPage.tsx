@@ -4,31 +4,20 @@ import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
 import Divider from '@mui/material/Divider';
+import Button from '@mui/material/Button';
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
-import { GoogleLogin, CredentialResponse } from '@react-oauth/google';
-import { useAppDispatch, useAppSelector } from '../store';
-import { setCredentials } from '../store/authSlice';
-import { useGoogleLoginMutation } from '../api/authApi';
+import { useAppSelector } from '../store';
 
 export default function LoginPage() {
-  const dispatch = useAppDispatch();
   const navigate = useNavigate();
-  const token = useAppSelector((s) => s.auth.token);
-  const [googleLogin, { isLoading }] = useGoogleLoginMutation();
+  const token = useAppSelector((s) => s.auth.accessToken);
 
   useEffect(() => {
     if (token) navigate('/dashboard', { replace: true });
   }, [token, navigate]);
 
-  const handleSuccess = async (credentialResponse: CredentialResponse) => {
-    if (!credentialResponse.credential) return;
-    try {
-      const result = await googleLogin({ token: credentialResponse.credential }).unwrap();
-      dispatch(setCredentials({ token: result.access_token, user: result.user }));
-      navigate('/dashboard', { replace: true });
-    } catch (err) {
-      console.error('Login failed', err);
-    }
+  const handleSignIn = () => {
+    window.location.href = '/api/v1/auth/google/redirect';
   };
 
   return (
@@ -51,18 +40,15 @@ export default function LoginPage() {
           LLM-powered semantic search and knowledge extraction
         </Typography>
         <Divider sx={{ mb: 3 }} />
-        {isLoading ? (
-          <Typography variant="body2" color="text.secondary">Signing in...</Typography>
-        ) : (
-          <Box display="flex" justifyContent="center">
-            <GoogleLogin
-              onSuccess={handleSuccess}
-              onError={() => console.error('Google login error')}
-              useOneTap
-              size="large"
-            />
-          </Box>
-        )}
+        <Button
+          variant="outlined"
+          size="large"
+          fullWidth
+          onClick={handleSignIn}
+          sx={{ textTransform: 'none', fontSize: '1rem' }}
+        >
+          Sign in with Google
+        </Button>
       </Paper>
     </Box>
   );

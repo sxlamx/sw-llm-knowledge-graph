@@ -43,7 +43,7 @@ const SearchBar: React.FC = () => {
     <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start', flexWrap: 'wrap' }}>
       <Autocomplete
         freeSolo
-        options={suggestions?.suggestions ?? []}
+        options={Array.isArray(suggestions) ? suggestions : []}
         inputValue={inputValue}
         onInputChange={(_, value) => setInputValue(value)}
         sx={{ flex: 1, minWidth: 260 }}

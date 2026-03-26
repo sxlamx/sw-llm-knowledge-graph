@@ -10,14 +10,16 @@ from typing import Optional
 
 from app.config import get_settings
 from app.db.lancedb_client import (
-    update_collection, update_ingest_job, upsert_to_table,
-    upsert_graph_node, upsert_graph_edge,
+    get_lancedb, get_ingest_job, update_collection, update_ingest_job,
+    upsert_to_table, upsert_graph_node, upsert_graph_edge,
+    get_outdated_ner_chunks, update_chunk_ner_tags, bulk_update_chunk_ner_tags,
 )
 from app.llm.embedder import embed_texts
 from app.llm.extractor import (
     generate_doc_summary, generate_contextual_prefix, extract_from_chunk,
 )
-from app.llm.ner_tagger import tag_chunk, tags_to_json
+from app.llm.ner_tagger import tag_chunk, tags_to_json, NER_VERSION, check_ner_ready
+from app.core.pdf_extractor import extract_text_smart
 from app.pipeline.job_manager import get_job_manager
 from app.models.schemas import IngestOptions
 
@@ -27,13 +29,93 @@ logger = logging.getLogger(__name__)
 _limiter = asyncio.Semaphore(10)
 
 
+async def _file_already_indexed(collection_id: str, file_path: str) -> bool:
+    """Return True if this file_path already has chunks in the collection."""
+    try:
+        db = await get_lancedb()
+        tbl = db.open_table(f"{collection_id}_chunks")
+        if "path" not in tbl.schema.names:
+            return False  # Old table without path column — can't dedup
+        escaped = file_path.replace("\\", "\\\\").replace('"', '\\"')
+        rows = tbl.search().where(f'path = "{escaped}"', prefilter=True).limit(1).to_list()
+        return len(rows) > 0
+    except Exception:
+        return False  # Table doesn't exist yet — nothing indexed
+
+
+_NER_BATCH_SIZE = 200   # flush to LanceDB every N results
+_NER_CONCURRENCY = 16  # parallel spaCy workers
+
+
+async def _run_ner_pass(collection_id: str, job_id: str) -> None:
+    """Tag all untagged (or outdated) chunks in the collection with NER.
+
+    Uses batched LanceDB writes (_NER_BATCH_SIZE) to avoid per-row update overhead.
+    Raises immediately if en_core_web_trf is not installed.
+    """
+    try:
+        await check_ner_ready()  # fail loudly if spaCy trf not installed
+        chunks = await get_outdated_ner_chunks(collection_id, NER_VERSION)
+        if not chunks:
+            return
+
+        total = len(chunks)
+        logger.info(f"[ner] tagging {total} chunks for collection {collection_id}")
+
+        tagged = 0
+        errors = 0
+        semaphore = asyncio.Semaphore(_NER_CONCURRENCY)
+        pending_batch: list[dict] = []
+        batch_lock = asyncio.Lock()
+
+        async def _flush_batch(force: bool = False) -> None:
+            nonlocal tagged
+            async with batch_lock:
+                if not pending_batch:
+                    return
+                if not force and len(pending_batch) < _NER_BATCH_SIZE:
+                    return
+                batch = pending_batch[:]
+                pending_batch.clear()
+            written = await bulk_update_chunk_ner_tags(collection_id, batch)
+            tagged += written
+            if tagged % 1000 < _NER_BATCH_SIZE or force:
+                logger.info(f"[ner] {tagged}/{total} tagged for {collection_id}")
+
+        async def _tag_one(chunk: dict) -> None:
+            nonlocal errors
+            chunk_id = chunk.get("id", "")
+            text = chunk.get("text", "")
+            if not chunk_id or not text:
+                return
+            async with semaphore:
+                try:
+                    tags = await tag_chunk(text, llm_ner_spans=None, use_regex_citations=True)
+                    async with batch_lock:
+                        pending_batch.append({
+                            "id": chunk_id,
+                            "ner_tags": tags_to_json(tags),
+                            "ner_version": NER_VERSION,
+                        })
+                    await _flush_batch()
+                except Exception as e:
+                    logger.warning(f"[ner] chunk {chunk_id} failed: {e}")
+                    errors += 1
+
+        await asyncio.gather(*[_tag_one(c) for c in chunks])
+        await _flush_batch(force=True)  # write final partial batch
+        logger.info(f"[ner] done: {tagged} tagged, {errors} errors for collection {collection_id}")
+    except Exception as e:
+        logger.error(f"[ner] NER pass failed for collection {collection_id}: {e}")
+
+
 async def run_ingest_pipeline(
     job_id: str,
     collection_id: str,
     folder_path: str,
     options: IngestOptions,
 ) -> None:
-    """Full ingestion pipeline: scan → extract → chunk → embed → graph."""
+    """Full ingestion pipeline: scan → extract → chunk → embed → NER."""
     from app.core.rust_bridge import (
         get_ingestion_engine, get_index_manager,
         rust_init_collection_async, rust_insert_chunks_async,
@@ -43,13 +125,12 @@ async def run_ingest_pipeline(
     im = get_index_manager()
 
     if im is None:
-        await update_ingest_job(job_id, {"status": "failed", "error_msg": "Rust core not available"})
-        return
-
-    try:
-        await rust_init_collection_async(collection_id)
-    except Exception as e:
-        logger.warning(f"Collection init warning: {e}")
+        logger.warning("[ingest] Rust core not available — BM25 indexing disabled, vector-only mode")
+    else:
+        try:
+            await rust_init_collection_async(collection_id)
+        except Exception as e:
+            logger.warning(f"Collection init warning: {e}")
 
     await update_ingest_job(job_id, {"status": "running", "started_at": int(datetime.utcnow().timestamp() * 1_000_000)})
 
@@ -76,6 +157,7 @@ async def run_ingest_pipeline(
     await update_ingest_job(job_id, {"total_docs": total, "status": "running"})
 
     processed = 0
+    skipped = 0
     all_chunks = []
 
     for entry in entries:
@@ -83,21 +165,39 @@ async def run_ingest_pipeline(
             await update_ingest_job(job_id, {"status": "cancelled"})
             return
 
+        file_path = entry.get("path", "")
+
+        # ── hash dedup: skip files already indexed in this collection ──────
+        if await _file_already_indexed(collection_id, file_path):
+            logger.info(f"[ingest] skip (already indexed): {file_path}")
+            skipped += 1
+            processed += 1
+            jm.emit(job_id, {
+                "type": "progress",
+                "job_id": job_id,
+                "processed": processed,
+                "total": total,
+                "current_file": file_path,
+                "progress": processed / max(total, 1),
+                "skipped": skipped,
+            })
+            continue
+
         try:
             await update_ingest_job(
                 job_id,
                 {
-                    "current_file": entry.get("path", ""),
+                    "current_file": file_path,
                     "processed_docs": processed,
                     "progress": processed / max(total, 1),
                 },
             )
 
-            extracted = await loop.run_in_executor(
-                None,
-                lambda: engine.extract_text(entry["path"], entry.get("file_type", "unknown")),
+            doc_data = await extract_text_smart(
+                entry["path"],
+                entry.get("file_type", "unknown"),
+                engine=engine,
             )
-            doc_data = json.loads(extracted)
 
             summary = await generate_doc_summary(doc_data.get("raw_text", "")) if settings.enable_contextual_prefix else ""
 
@@ -124,12 +224,14 @@ async def run_ingest_pipeline(
             if enriched_chunks:
                 embeddings = await embed_texts([c["contextual_text"] for c in enriched_chunks])
                 doc_uuid = str(uuid.uuid4())
+                file_name = Path(file_path).name if file_path else f"doc-{doc_uuid[:8]}"
 
                 for i, chunk in enumerate(enriched_chunks):
                     chunk_record = {
                         "id": str(uuid.uuid4()),
                         "doc_id": doc_uuid,
                         "collection_id": collection_id,
+                        "path": file_path,            # stored for dedup + document listing
                         "text": chunk["text"],
                         "contextual_text": chunk.get("contextual_text", chunk["text"]),
                         "position": chunk["position"],
@@ -150,12 +252,15 @@ async def run_ingest_pipeline(
                     all_chunks = []
 
             processed += 1
+
+            # ── checkpoint: record last successfully completed file ────────
             await update_ingest_job(
                 job_id,
                 {
                     "processed_docs": processed,
                     "progress": processed / max(total, 1),
-                    "current_file": entry.get("path", ""),
+                    "current_file": file_path,
+                    "last_completed_file": file_path,
                 },
             )
 
@@ -164,19 +269,19 @@ async def run_ingest_pipeline(
                 "job_id": job_id,
                 "processed": processed,
                 "total": total,
-                "current_file": entry.get("path", ""),
+                "current_file": file_path,
                 "progress": processed / max(total, 1),
             })
 
         except Exception as e:
-            logger.error(f"Failed to process {entry.get('path')}: {e}")
+            logger.error(f"Failed to process {file_path}: {e}")
             processed += 1
             continue
 
     if all_chunks:
         await flush_chunks(all_chunks, collection_id, job_id, im)
 
-    await update_collection(collection_id, {"doc_count": total, "status": "active"})
+    await update_collection(collection_id, {"doc_count": total - skipped, "status": "active"})
     await update_ingest_job(
         job_id,
         {
@@ -194,6 +299,9 @@ async def run_ingest_pipeline(
         "total": total,
     })
 
+    # ── NER pass (background, after ingest marked completed) ─────────────
+    asyncio.create_task(_run_ner_pass(collection_id, job_id))
+
 
 async def flush_chunks(
     chunks: list[dict],
@@ -201,27 +309,50 @@ async def flush_chunks(
     job_id: str,
     im,
 ) -> None:
+    """Persist a batch of chunks to LanceDB and the Rust BM25 index."""
     table_name = f"{collection_id}_chunks"
-    schema = {
-        "id": "string",
-        "doc_id": "string",
-        "collection_id": "string",
-        "text": "string",
-        "contextual_text": "string",
-        "position": "int32",
-        "token_count": "int32",
-        "page": "int32",
-        "topics": "string",
-        "created_at": "int64",
-    }
-    await upsert_to_table(table_name, chunks)
+    db = await get_lancedb()
 
-    chunks_json = json.dumps(chunks)
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(
-        None,
-        lambda: im.insert_chunks(collection_id, chunks_json),
-    )
+    # Add default NER columns so chunks are compatible with migrated table schema
+    for chunk in chunks:
+        chunk.setdefault("ner_tags", "")
+        chunk.setdefault("ner_tagged", False)
+        chunk.setdefault("ner_tagged_at", 0)
+        chunk.setdefault("ner_version", 0)
+
+    try:
+        tbl = db.open_table(table_name)
+        # Migrate: add columns if the table predates these fields
+        schema_names = tbl.schema.names
+        if "path" not in schema_names:
+            tbl.add_columns({"path": "cast('' as string)"})
+        if "ner_tags" not in schema_names:
+            tbl.add_columns({"ner_tags": "cast('' as string)"})
+        if "ner_tagged" not in schema_names:
+            tbl.add_columns({"ner_tagged": "cast(false as boolean)"})
+        if "ner_tagged_at" not in schema_names:
+            tbl.add_columns({"ner_tagged_at": "cast(0 as bigint)"})
+        if "ner_version" not in schema_names:
+            tbl.add_columns({"ner_version": "cast(0 as int)"})
+        tbl.add(chunks)
+    except Exception:
+        # Table doesn't exist yet — create from first batch
+        try:
+            db.create_table(table_name, data=chunks, exist_ok=True)
+        except Exception as e:
+            logger.error(f"[flush] failed to create/write chunks table {table_name}: {e}")
+            return
+
+    if im is not None:
+        chunks_json = json.dumps(chunks)
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(
+                None,
+                lambda: im.insert_chunks(collection_id, chunks_json),
+            )
+        except Exception as e:
+            logger.warning(f"[flush] BM25 insert_chunks failed (non-fatal): {e}")
 
 
 async def _run_ner_only(chunk_records: list[dict]) -> dict[str, str]:

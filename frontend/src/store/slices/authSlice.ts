@@ -1,11 +1,7 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
+import type { User } from '../../types/api';
 
-export interface User {
-  id: string;
-  email: string;
-  name: string;
-  picture?: string;
-}
+export type { User };
 
 interface AuthState {
   user: User | null;
@@ -22,13 +18,14 @@ const initialState: AuthState = {
 };
 
 // Restore user from localStorage on init (token stays in memory only)
-const storedUser = localStorage.getItem('kg_user');
-if (storedUser) {
-  try {
+try {
+  const storedUser = localStorage.getItem('kg_user');
+  if (storedUser) {
     initialState.user = JSON.parse(storedUser);
-  } catch {
-    localStorage.removeItem('kg_user');
+    if (initialState.user) initialState.isAuthenticated = true;
   }
+} catch {
+  // localStorage not available (e.g. SSR or test environments without jsdom)
 }
 
 const authSlice = createSlice({

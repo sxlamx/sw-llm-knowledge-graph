@@ -3,7 +3,7 @@ import { GoogleLogin, CredentialResponse } from '@react-oauth/google';
 import { Box, Typography } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
 import { useAppDispatch } from '../../store';
-import { setCredentials, setLoading } from '../../store/slices/authSlice';
+import { setCredentials, setLoading } from '../../store/authSlice';
 import { useGoogleLoginMutation } from '../../api/authApi';
 import { showSnackbar } from '../../store/slices/uiSlice';
 import { wsConnect } from '../../store/wsMiddleware';
@@ -18,7 +18,7 @@ const GoogleLoginButton: React.FC = () => {
 
     dispatch(setLoading(true));
     try {
-      const result = await googleLogin({ id_token: credentialResponse.credential }).unwrap();
+      const result = await googleLogin({ token: credentialResponse.credential }).unwrap();
       dispatch(setCredentials({ user: result.user, accessToken: result.access_token }));
       dispatch(wsConnect());
       navigate('/dashboard');
@@ -36,7 +36,6 @@ const GoogleLoginButton: React.FC = () => {
         onError={() =>
           dispatch(showSnackbar({ message: 'Google sign-in failed.', severity: 'error' }))
         }
-        useOneTap
       />
       <Typography variant="caption" color="text.secondary">
         Sign in with your Google account to continue

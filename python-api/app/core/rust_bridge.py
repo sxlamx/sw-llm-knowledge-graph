@@ -52,19 +52,11 @@ def get_ontology_validator() -> Optional["PyOntologyValidator"]:
 
 
 async def rust_search_async(collection_id: str, embedding: list[float], limit: int) -> list[dict]:
-    im = get_index_manager()
-    if im is None:
-        return []
-
-    loop = asyncio.get_event_loop()
     try:
-        results = await loop.run_in_executor(
-            _executor,
-            lambda: im.vector_search(collection_id, embedding, limit),
-        )
-        return results
+        from app.db.lancedb_client import vector_search
+        return await vector_search(collection_id, embedding, limit)
     except Exception as e:
-        logger.error(f"Rust vector search error: {e}")
+        logger.error(f"Vector search error: {e}")
         return []
 
 

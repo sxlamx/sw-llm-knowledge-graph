@@ -61,7 +61,7 @@ const IngestPanel: React.FC<Props> = ({ collectionId }) => {
       const result = await startIngest({
         collection_id: collectionId,
         folder_path: folderPath,
-        options: { chunk_size: chunkSize, chunk_overlap: chunkOverlap, extract_entities: extractEntities },
+        options: { chunk_size_tokens: chunkSize, chunk_overlap_tokens: chunkOverlap },
       }).unwrap();
       setActiveJobId(result.id);
       setProgress(0);

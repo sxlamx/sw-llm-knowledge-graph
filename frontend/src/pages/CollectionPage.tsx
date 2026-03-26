@@ -94,6 +94,13 @@ export default function CollectionPage() {
   const [ingesting, setIngesting] = useState(false);
   const [ingestError, setIngestError] = useState('');
 
+  // Pre-populate folder path from saved collection.folder_path
+  useEffect(() => {
+    if (collection?.folder_path && !folderPath) {
+      setFolderPath(collection.folder_path);
+    }
+  }, [collection?.folder_path]);
+
   const handleIngest = async () => {
     if (!folderPath.trim() || !id) return;
     setIngesting(true);
@@ -104,7 +111,7 @@ export default function CollectionPage() {
         folder_path: folderPath.trim(),
       }).unwrap();
       setActiveJobId(job.id);
-      setFolderPath('');
+      // keep folderPath so user can re-run without retyping
     } catch (err: any) {
       setIngestError(err?.data?.detail ?? 'Failed to start ingest');
     } finally {

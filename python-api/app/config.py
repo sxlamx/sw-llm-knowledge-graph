@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     # JWT
     jwt_private_key_path: str = "./secrets/jwt_private_key.pem"
     jwt_public_key_path: str = "./secrets/jwt_public_key.pem"
-    jwt_expiry_minutes: int = 10
+    jwt_expiry_minutes: int = 60
     jwt_refresh_expiry_days: int = 7
 
     # Frontend

@@ -35,16 +35,22 @@ export default function DashboardPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [folderPath, setFolderPath] = useState('');
   const [creating, setCreating] = useState(false);
 
   const handleCreate = async () => {
     if (!name.trim()) return;
     setCreating(true);
     try {
-      const col = await createCollection({ name: name.trim(), description: description.trim() || undefined }).unwrap();
+      const col = await createCollection({
+        name: name.trim(),
+        description: description.trim() || undefined,
+        folder_path: folderPath.trim() || undefined,
+      }).unwrap();
       setDialogOpen(false);
       setName('');
       setDescription('');
+      setFolderPath('');
       navigate(`/collection/${col.id}`);
     } catch (err) {
       console.error('Create failed', err);
@@ -157,6 +163,14 @@ export default function DashboardPage() {
             onChange={(e) => setDescription(e.target.value)}
             multiline
             rows={2}
+          />
+          <TextField
+            label="Folder path (optional)"
+            placeholder="/path/to/documents"
+            fullWidth
+            margin="normal"
+            value={folderPath}
+            onChange={(e) => setFolderPath(e.target.value)}
           />
         </DialogContent>
         <DialogActions>

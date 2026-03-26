@@ -7,14 +7,14 @@ import { configureStore } from '@reduxjs/toolkit';
 import { Provider } from 'react-redux';
 import { MemoryRouter } from 'react-router-dom';
 import { api } from '../api/baseApi';
-import authReducer from '../store/slices/authSlice';
+import authReducer from '../store/authSlice';
 import collectionsReducer from '../store/slices/collectionsSlice';
 import searchReducer from '../store/slices/searchSlice';
 import graphReducer from '../store/slices/graphSlice';
 import uiReducer from '../store/slices/uiSlice';
 
 export function makeStore(preloadedState?: Record<string, unknown>) {
-  return configureStore({
+  const options = {
     reducer: {
       auth: authReducer,
       collections: collectionsReducer,
@@ -23,9 +23,15 @@ export function makeStore(preloadedState?: Record<string, unknown>) {
       ui: uiReducer,
       [api.reducerPath]: api.reducer,
     },
-    middleware: (g) => g({ serializableCheck: false }).concat(api.middleware),
-    preloadedState: preloadedState as never,
-  });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    middleware: (getDefaultMiddleware: any) =>
+      getDefaultMiddleware({ serializableCheck: false }).concat(api.middleware),
+  };
+  if (preloadedState !== undefined) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (options as any).preloadedState = preloadedState;
+  }
+  return configureStore(options);
 }
 
 interface WrapperOptions extends RenderOptions {

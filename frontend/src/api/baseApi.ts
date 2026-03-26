@@ -6,7 +6,7 @@ const rawBaseQuery = fetchBaseQuery({
   baseUrl: '/api/v1',
   credentials: 'include',
   prepareHeaders: (headers, { getState }) => {
-    const token = (getState() as RootState).auth.token;
+    const token = (getState() as RootState).auth.accessToken;
     if (token) {
       headers.set('Authorization', `Bearer ${token}`);
     }
@@ -32,7 +32,7 @@ const baseQueryWithReauth: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQue
       const data = refreshResult.data as { access_token: string; expires_in: number };
       const state = api.getState() as RootState;
       if (state.auth.user) {
-        api.dispatch(setCredentials({ token: data.access_token, user: state.auth.user }));
+        api.dispatch(setCredentials({ accessToken: data.access_token, user: state.auth.user as import('../types/api').User }));
       }
       result = await rawBaseQuery(args, api, extraOptions);
     } else {
@@ -46,6 +46,6 @@ const baseQueryWithReauth: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQue
 export const api = createApi({
   reducerPath: 'api',
   baseQuery: baseQueryWithReauth,
-  tagTypes: ['Collection', 'IngestJob', 'Document', 'SearchResult'],
+  tagTypes: ['Collection', 'IngestJob', 'Document', 'SearchResult', 'Ontology', 'GraphNode'],
   endpoints: () => ({}),
 });

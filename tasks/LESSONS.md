@@ -82,3 +82,11 @@ Each entry follows this structure:
 **Mistake:** `crate-type = ["cdylib"]` alone prevents `cargo test` from building integration tests in `tests/`, because there is no `rlib` to link against.
 **Correction:** Use `crate-type = ["cdylib", "rlib"]` so both the Python extension and the native Rust test harness are produced.
 **Rule:** Any pyo3 crate that needs `cargo test` (unit or integration) must declare `rlib` alongside `cdylib`.
+
+---
+
+**Date:** 2026-03-24
+**Context:** NER backfill of 516k chunks — spaCy model selection.
+**Mistake:** `_load_spacy_sync` fell back to `en_core_web_sm` when `en_core_web_trf` wasn't installed. The backfill ran briefly with sm, producing low-quality entity tags. These had to be wiped and reprocessed.
+**Correction:** Removed sm fallback. Bumped `NER_VERSION` to 3 so all sm-tagged chunks (v1, v2) are reprocessed by `get_outdated_ner_chunks`. Installed `en_core_web_trf` via `python -m spacy download en_core_web_trf`.
+**Rule:** Never fall back to `en_core_web_sm` for NER. If `en_core_web_trf` is missing, raise an error and fail loudly. All NER must use the transformer model.

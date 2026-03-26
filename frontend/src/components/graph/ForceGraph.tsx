@@ -158,7 +158,7 @@ const ForceGraph: React.FC<Props> = ({
 
   return (
     <ForceGraph2D
-      ref={fgRef as React.MutableRefObject<null>}
+      ref={fgRef as React.MutableRefObject<never>}
       graphData={{ nodes, links }}
       nodeId="id"
       nodeLabel={(n: object) => (n as ForceGraphNode).label}

@@ -13,8 +13,11 @@ from app.models.schemas import (
     IngestFolderRequest, IngestJobResponse, IngestJobListResponse,
 )
 import json
+import logging
 import uuid
 import asyncio
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -152,3 +155,52 @@ async def stream_job_progress(job_id: str, current_user: dict = Depends(get_curr
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# In-memory NER job state
+_ner_jobs: dict[str, dict] = {}
+
+
+@router.post("/collections/{collection_id}/ner", status_code=202)
+async def trigger_ner_pass(
+    collection_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Trigger a background spaCy+regex NER pass on all untagged chunks.
+
+    Returns a job_id to poll with GET /ingest/collections/{collection_id}/ner/{job_id}.
+    No LLM calls — uses spaCy and regex citation detection only.
+    """
+    collection = await get_collection(collection_id)
+    if not collection:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    if collection.get("user_id") != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    job_id = str(uuid.uuid4())
+
+    async def _run():
+        from app.pipeline.ingest_worker import _run_ner_pass
+        _ner_jobs[job_id] = {"status": "running"}
+        try:
+            await _run_ner_pass(collection_id, job_id)
+            _ner_jobs[job_id]["status"] = "completed"
+        except Exception as e:
+            logger.error(f"NER pass {job_id} failed: {e}")
+            _ner_jobs[job_id] = {"status": "failed", "error": str(e)}
+
+    asyncio.create_task(_run())
+    return {"job_id": job_id, "collection_id": collection_id, "status": "started"}
+
+
+@router.get("/collections/{collection_id}/ner/{job_id}")
+async def get_ner_job_status(
+    collection_id: str,
+    job_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Poll the status of a NER pass job."""
+    job = _ner_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="NER job not found")
+    return {"job_id": job_id, "collection_id": collection_id, **job}

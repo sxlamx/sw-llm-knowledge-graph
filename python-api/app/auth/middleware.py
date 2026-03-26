@@ -21,6 +21,8 @@ NO_AUTH_PATHS = {
     "/redoc",
     "/openapi.json",
     "/api/v1/auth/google",
+    "/api/v1/auth/google/redirect",
+    "/api/v1/auth/google/exchange",
     "/api/v1/auth/refresh",
 }
 

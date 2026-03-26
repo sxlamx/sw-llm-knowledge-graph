@@ -1,11 +1,19 @@
 import { configureStore } from '@reduxjs/toolkit';
 import { useDispatch, useSelector } from 'react-redux';
-import authReducer from './authSlice';
+import authReducer from './slices/authSlice';
+import uiReducer from './slices/uiSlice';
+import graphReducer from './slices/graphSlice';
+import collectionsReducer from './slices/collectionsSlice';
+import searchReducer from './slices/searchSlice';
 import { api } from '../api/baseApi';
 
 export const store = configureStore({
   reducer: {
     auth: authReducer,
+    ui: uiReducer,
+    graph: graphReducer,
+    collections: collectionsReducer,
+    search: searchReducer,
     [api.reducerPath]: api.reducer,
   },
   middleware: (getDefaultMiddleware) =>

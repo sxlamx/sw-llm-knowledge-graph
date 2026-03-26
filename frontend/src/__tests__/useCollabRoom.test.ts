@@ -17,7 +17,8 @@ class MockWebSocket {
   static instances: MockWebSocket[] = [];
   onmessage: ((ev: MessageEvent) => void) | null = null;
   onclose: (() => void) | null = null;
-  readyState = WebSocket.OPEN;
+  onopen: ((ev: Event) => void) | null = null;
+  readyState: number = WebSocket.OPEN;
   url: string;
   send = vi.fn();
   close = vi.fn().mockImplementation(() => {
@@ -28,6 +29,8 @@ class MockWebSocket {
   constructor(url: string) {
     this.url = url;
     MockWebSocket.instances.push(this);
+    // Fire onopen asynchronously so the hook has time to register the handler
+    Promise.resolve().then(() => this.onopen?.({} as Event));
   }
 
   /** Test helper — simulate a server message */
@@ -50,8 +53,9 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 function wrapper(store: ReturnType<typeof makeStore>) {
-  return ({ children }: { children: React.ReactNode }) =>
-    React.createElement(Provider, { store }, children);
+  return function Wrapper({ children }: { children: React.ReactNode }) {
+    return React.createElement(Provider, { store, children });
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -125,12 +129,15 @@ describe('useCollabRoom', () => {
     expect(store.getState().graph.presence['u2']).toBeUndefined();
   });
 
-  it('sendPresence sends a viewing op', () => {
+  it('sendPresence sends a viewing op', async () => {
     const store = makeStore({
       auth: { user: null, accessToken: 'tok', isAuthenticated: true, isLoading: false },
     });
     const { result } = renderHook(() => useCollabRoom('col-1'), { wrapper: wrapper(store) });
     const ws = MockWebSocket.instances[0];
+
+    // Wait for the async onopen to fire and set wsRef.current
+    await act(async () => { await Promise.resolve(); });
 
     act(() => {
       result.current.sendPresence('n99');
@@ -143,12 +150,15 @@ describe('useCollabRoom', () => {
     expect(msg.action).toBe('viewing');
   });
 
-  it('sendNodeUpdate sends a node_update op', () => {
+  it('sendNodeUpdate sends a node_update op', async () => {
     const store = makeStore({
       auth: { user: null, accessToken: 'tok', isAuthenticated: true, isLoading: false },
     });
     const { result } = renderHook(() => useCollabRoom('col-1'), { wrapper: wrapper(store) });
     const ws = MockWebSocket.instances[0];
+
+    // Wait for the async onopen to fire and set wsRef.current
+    await act(async () => { await Promise.resolve(); });
 
     act(() => {
       result.current.sendNodeUpdate('n1', { label: 'Company' });

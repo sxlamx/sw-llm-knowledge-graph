@@ -21,12 +21,12 @@ interface Props {
 }
 
 const ResultCard: React.FC<Props> = ({ result }) => {
-  const scorePercent = Math.round(result.final_score * 100);
+  const scorePercent = Math.round((result.final_score ?? result.score ?? 0) * 100);
   const [imgExpanded, setImgExpanded] = useState(false);
 
   const renderText = () => {
-    if (result.highlights.length > 0) {
-      return result.highlights.map((h, i) => (
+    if ((result.highlights?.length ?? 0) > 0) {
+      return result.highlights!.map((h, i) => (
         <span key={i} dangerouslySetInnerHTML={{ __html: h }} />
       ));
     }
@@ -80,9 +80,9 @@ const ResultCard: React.FC<Props> = ({ result }) => {
           {renderText()}
         </Typography>
 
-        {result.topics.length > 0 && (
+        {(result.topics?.length ?? 0) > 0 && (
           <Box sx={{ mt: 1, display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
-            {result.topics.slice(0, 4).map((t) => (
+            {result.topics!.slice(0, 4).map((t) => (
               <Chip key={t} label={t} size="small" variant="outlined" sx={{ height: 20, fontSize: '0.65rem' }} />
             ))}
           </Box>

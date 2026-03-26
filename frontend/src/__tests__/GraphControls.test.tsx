@@ -5,19 +5,19 @@ import GraphControls from '../components/graph/GraphControls';
 const EDGE_TYPES = ['WORKS_AT', 'RELATED_TO', 'FOUNDED_BY', 'LOCATED_IN', 'PART_OF', 'CITES'];
 
 function setup(overrides: Partial<Parameters<typeof GraphControls>[0]> = {}) {
-  const props = {
+  const defaults: Parameters<typeof GraphControls>[0] = {
     depth: 2,
     onDepthChange: vi.fn(),
     pathFinderMode: false,
     onPathFinderToggle: vi.fn(),
     activeEdgeTypes: [],
-    onEdgeTypeToggle: vi.fn(),
+    onEdgeTypeFiltersChange: vi.fn(),
     entityTypeFilters: [],
-    onEntityTypeToggle: vi.fn(),
+    onEntityTypeFiltersChange: vi.fn(),
     nerLabelFilters: [],
-    onNerLabelToggle: vi.fn(),
-    ...overrides,
+    onNerLabelFiltersChange: vi.fn(),
   };
+  const props = { ...defaults, ...overrides } as Parameters<typeof GraphControls>[0];
   render(<GraphControls {...props} />);
   return props;
 }
@@ -35,16 +35,20 @@ describe('GraphControls', () => {
 
   it('renders all edge type chips', () => {
     setup();
+    // Expand the edge types section first (collapsed by default)
+    fireEvent.click(screen.getByText('Edge types'));
     for (const type of EDGE_TYPES) {
       expect(screen.getByText(type)).toBeInTheDocument();
     }
   });
 
-  it('calls onEdgeTypeToggle when a chip is clicked', () => {
-    const onEdgeTypeToggle = vi.fn();
-    setup({ onEdgeTypeToggle });
+  it('calls onEdgeTypeFiltersChange when an edge type is clicked', () => {
+    const onEdgeTypeFiltersChange = vi.fn();
+    setup({ onEdgeTypeFiltersChange });
+    // Expand the edge types section first
+    fireEvent.click(screen.getByText('Edge types'));
     fireEvent.click(screen.getByText('WORKS_AT'));
-    expect(onEdgeTypeToggle).toHaveBeenCalledWith('WORKS_AT');
+    expect(onEdgeTypeFiltersChange).toHaveBeenCalled();
   });
 
   it('Path Finder button is not selected by default', () => {
@@ -66,10 +70,13 @@ describe('GraphControls', () => {
     expect(onPathFinderToggle).toHaveBeenCalledOnce();
   });
 
-  it('active edge type chip has primary color', () => {
+  it('active edge type is checked in the list', () => {
     setup({ activeEdgeTypes: ['WORKS_AT'] });
-    // The active chip should have MuiChip-colorPrimary class
-    const chip = screen.getByText('WORKS_AT').closest('.MuiChip-root');
-    expect(chip).toHaveClass('MuiChip-colorPrimary');
+    // Expand edge types section
+    fireEvent.click(screen.getByText('Edge types'));
+    // WORKS_AT checkbox should be checked
+    const item = screen.getByText('WORKS_AT').closest('li');
+    const checkbox = item?.querySelector('input[type="checkbox"]');
+    expect(checkbox).toBeChecked();
   });
 });

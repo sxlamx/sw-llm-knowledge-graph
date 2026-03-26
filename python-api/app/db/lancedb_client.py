@@ -452,11 +452,18 @@ async def delete_document(doc_id: str, collection_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 async def get_chunks_for_collection(collection_id: str) -> list[dict]:
-    """Return all chunks for a collection (id + text + ner_tags fields)."""
+    """Return id + text + ner_tags for all chunks (no embeddings)."""
     db = await get_lancedb()
     try:
         tbl = db.open_table(f"{collection_id}_chunks")
-        return tbl.search().to_list()
+        schema_names = set(tbl.schema.names)
+        cols = [c for c in ["id", "text", "ner_tags", "ner_version"] if c in schema_names]
+        return (
+            tbl.search()
+            .select(cols)
+            .limit(1_000_000)
+            .to_list()
+        )
     except Exception:
         return []
 
@@ -464,6 +471,8 @@ async def get_chunks_for_collection(collection_id: str) -> list[dict]:
 def _migrate_chunks_ner_columns(tbl) -> None:
     """Add NER tracking columns to an existing chunks table if absent."""
     schema_names = tbl.schema.names
+    if "ner_tags" not in schema_names:
+        tbl.add_columns({"ner_tags": "cast('' as string)"})
     if "ner_tagged" not in schema_names:
         tbl.add_columns({"ner_tagged": "cast(false as boolean)"})
     if "ner_tagged_at" not in schema_names:
@@ -494,13 +503,64 @@ async def update_chunk_ner_tags(collection_id: str, chunk_id: str, ner_tags_json
         raise  # re-raise so callers can count real errors
 
 
+async def bulk_update_chunk_ner_tags(
+    collection_id: str,
+    updates: list[dict],  # each: {"id", "ner_tags", "ner_version"}
+) -> int:
+    """Batch-update NER fields for many chunks in one merge_insert call.
+
+    Returns the number of successfully written rows.
+    """
+    if not updates:
+        return 0
+    db = await get_lancedb()
+    table_name = f"{collection_id}_chunks"
+    now = int(datetime.utcnow().timestamp() * 1_000_000)
+    try:
+        tbl = db.open_table(table_name)
+        _migrate_chunks_ner_columns(tbl)
+
+        # Build a minimal PyArrow table with only the NER columns + id for the merge key.
+        import pyarrow as _pa
+        ids       = [u["id"]         for u in updates]
+        tags      = [u["ner_tags"]   for u in updates]
+        versions  = [u["ner_version"] for u in updates]
+        nows      = [now] * len(updates)
+        trues     = [True] * len(updates)
+
+        batch = _pa.table({
+            "id":           _pa.array(ids,      type=_pa.string()),
+            "ner_tags":     _pa.array(tags,     type=_pa.string()),
+            "ner_tagged":   _pa.array(trues,    type=_pa.bool_()),
+            "ner_tagged_at":_pa.array(nows,     type=_pa.int64()),
+            "ner_version":  _pa.array(versions, type=_pa.int32()),
+        })
+
+        # merge_insert on "id": update matching rows, ignore non-matching
+        (
+            tbl.merge_insert("id")
+            .when_matched_update_all()
+            .execute(batch)
+        )
+        return len(updates)
+    except Exception as e:
+        logger.warning(f"bulk_update_chunk_ner_tags failed for {collection_id}: {e}")
+        return 0
+
+
 async def get_outdated_ner_chunks(collection_id: str, current_version: int) -> list[dict]:
     """Return chunks whose ner_version is below current_version (includes untagged chunks at v0)."""
     db = await get_lancedb()
     try:
         tbl = db.open_table(f"{collection_id}_chunks")
         _migrate_chunks_ner_columns(tbl)
-        return tbl.search().where(f"ner_version < {current_version}", prefilter=True).to_list()
+        return (
+            tbl.search()
+            .where(f"ner_version < {current_version}", prefilter=True)
+            .select(["id", "text"])
+            .limit(1_000_000)
+            .to_list()
+        )
     except Exception:
         return []
 
@@ -563,7 +623,7 @@ async def vector_search(
     db = await get_lancedb()
     try:
         tbl = db.open_table(f"{collection_id}_chunks")
-        q = tbl.search(embedding).limit(limit)
+        q = tbl.search(embedding, vector_column_name="embedding").limit(limit)
         results = q.to_list()
         # Attach score field name normalisation
         normalised = []

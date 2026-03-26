@@ -4,6 +4,7 @@ import ResultCard from '../components/search/ResultCard';
 import type { SearchResultItem } from '../api/searchApi';
 
 const baseResult: SearchResultItem = {
+  id: 'r1',
   chunk_id: 'c1',
   doc_id: 'd1',
   doc_title: 'Test Document',
@@ -40,7 +41,7 @@ describe('ResultCard', () => {
   });
 
   it('shows description icon for text chunk (no image)', () => {
-    const { container } = render(<ResultCard result={baseResult} />);
+    render(<ResultCard result={baseResult} />);
     // DescriptionIcon renders as SVG with data-testid or title
     // Confirm image expand section is absent
     expect(screen.queryByText('Page image')).not.toBeInTheDocument();

@@ -24,8 +24,9 @@ logger = logging.getLogger(__name__)
 # Chunks store this version; --reindex-ner retags any chunk below current.
 #   v1 — initial hybrid spaCy + LLM legal NER
 #   v2 — re-run after fixing missing spaCy installation in venv
+#   v3 — installed en_core_web_trf; reprocess all sm-tagged chunks with transformer model
 # ---------------------------------------------------------------------------
-NER_VERSION: int = 2
+NER_VERSION: int = 3
 
 # ---------------------------------------------------------------------------
 # Canonical label mapping from spaCy labels
@@ -143,12 +144,33 @@ def _load_spacy_sync() -> object:
     try:
         return spacy.load(_SPACY_MODEL, disable=["parser", "lemmatizer"])
     except OSError:
-        logger.warning(f"spaCy model '{_SPACY_MODEL}' not found; falling back to en_core_web_sm")
-        try:
-            return spacy.load("en_core_web_sm", disable=["parser", "lemmatizer"])
-        except OSError:
-            logger.error("No spaCy model available. Run: python -m spacy download en_core_web_trf")
-            return None
+        logger.error(
+            f"spaCy model '{_SPACY_MODEL}' not found. "
+            "Run: python -m spacy download en_core_web_trf"
+        )
+        return None
+
+
+async def check_ner_ready() -> None:
+    """Raise RuntimeError if en_core_web_trf is not loadable.
+
+    Call this before starting any NER pass so failures are loud and early,
+    not silent per-chunk errors.
+    """
+    nlp = await _get_nlp()
+    if nlp is None:
+        raise RuntimeError(
+            f"spaCy model '{_SPACY_MODEL}' is not installed. "
+            "Run: python -m spacy download en_core_web_trf"
+        )
+    # Quick smoke-test: tag a short string and expect the NER component
+    import spacy as _spacy
+    if "ner" not in nlp.pipe_names:
+        raise RuntimeError(
+            f"Loaded spaCy model '{_SPACY_MODEL}' has no NER component (pipe_names={nlp.pipe_names}). "
+            "Ensure en_core_web_trf is correctly installed."
+        )
+    logger.info(f"[ner] spaCy model '{_SPACY_MODEL}' ready (pipes: {nlp.pipe_names})")
 
 
 async def _get_nlp():

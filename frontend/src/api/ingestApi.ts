@@ -20,6 +20,12 @@ export const ingestApi = api.injectEndpoints({
       query: (id) => ({ url: `/ingest/jobs/${id}/cancel`, method: 'POST' }),
       invalidatesTags: ['IngestJob'],
     }),
+    triggerNerPass: builder.mutation<{ job_id: string; status: string }, string>({
+      query: (collection_id) => ({
+        url: `/ingest/collections/${collection_id}/ner`,
+        method: 'POST',
+      }),
+    }),
   }),
 });
 
@@ -28,4 +34,8 @@ export const {
   useListJobsQuery,
   useGetJobQuery,
   useCancelJobMutation,
+  useTriggerNerPassMutation,
 } = ingestApi;
+
+/** Compat alias */
+export const useStartIngestJobMutation = useStartIngestMutation;

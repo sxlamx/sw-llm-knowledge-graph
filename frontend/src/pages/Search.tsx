@@ -30,10 +30,10 @@ const Search: React.FC = () => {
     if (!query.trim()) return;
     doSearch({
       query,
-      collection_ids: selectedCollectionIds.length > 0 ? selectedCollectionIds : undefined,
+      collection_ids: selectedCollectionIds.length > 0 ? selectedCollectionIds : [],
       topics: selectedTopics.length > 0 ? selectedTopics : undefined,
-      mode,
-      weights,
+      mode: (mode === 'graph' ? 'hybrid' : mode) as 'vector' | 'hybrid' | 'keyword' | undefined,
+      weights: weights as unknown as Record<string, number>,
       limit: 50,
       offset: 0,
     });

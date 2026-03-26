@@ -2,7 +2,7 @@ import { Navigate, useLocation } from 'react-router-dom';
 import { useAppSelector } from '../store';
 
 export default function RequireAuth({ children }: { children: React.ReactNode }) {
-  const token = useAppSelector((s) => s.auth.token);
+  const token = useAppSelector((s) => s.auth.accessToken);
   const location = useLocation();
 
   if (!token) {

@@ -8,7 +8,14 @@ export const documentsApi = api.injectEndpoints({
         `/documents?collection_id=${collection_id}&limit=${limit}&offset=${offset}`,
       providesTags: ['Document'],
     }),
+    deleteDocument: builder.mutation<void, { doc_id: string; collection_id: string }>({
+      query: ({ doc_id, collection_id }) => ({
+        url: `/documents/${doc_id}?collection_id=${collection_id}`,
+        method: 'DELETE',
+      }),
+      invalidatesTags: ['Document'],
+    }),
   }),
 });
 
-export const { useListDocumentsQuery } = documentsApi;
+export const { useListDocumentsQuery, useDeleteDocumentMutation } = documentsApi;

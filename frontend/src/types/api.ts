@@ -3,6 +3,8 @@ export interface User {
   email: string;
   name: string;
   avatar_url?: string;
+  /** Alias for avatar_url — used by older components */
+  picture?: string;
 }
 
 export interface AuthResponse {
@@ -55,20 +57,29 @@ export interface IngestStartRequest {
 
 export interface SearchResult {
   id: string;
+  chunk_id?: string;
   doc_id?: string;
+  doc_title?: string;
   text: string;
   collection_id?: string;
   score?: number;
+  final_score?: number;
   vector_score?: number;
   keyword_score?: number;
   page?: number;
   position?: number;
+  highlights?: string[];
+  topics?: string[];
+  has_image?: boolean;
+  image_b64?: string;
 }
 
 export interface SearchRequest {
   query: string;
   collection_ids: string[];
   mode?: 'vector' | 'hybrid' | 'keyword';
+  topics?: string[];
+  weights?: Record<string, number>;
   limit?: number;
   offset?: number;
 }
@@ -87,6 +98,8 @@ export interface Document {
   path?: string;
   doc_summary?: string;
   created_at?: number;
+  chunk_count?: number;
+  status?: string;
 }
 
 export interface DocumentListResponse {

@@ -10,6 +10,13 @@ export const authApi = api.injectEndpoints({
         body,
       }),
     }),
+    exchangeCode: builder.mutation<AuthResponse, { code: string; redirect_uri: string }>({
+      query: (body) => ({
+        url: '/auth/google/exchange',
+        method: 'POST',
+        body,
+      }),
+    }),
     logout: builder.mutation<void, void>({
       query: () => ({ url: '/auth/logout', method: 'POST' }),
       invalidatesTags: ['Collection', 'IngestJob', 'Document'],
@@ -17,4 +24,7 @@ export const authApi = api.injectEndpoints({
   }),
 });
 
-export const { useGoogleLoginMutation, useLogoutMutation } = authApi;
+export const { useGoogleLoginMutation, useExchangeCodeMutation, useLogoutMutation } = authApi;
+
+/** Compat alias */
+export const useLogoutUserMutation = useLogoutMutation;

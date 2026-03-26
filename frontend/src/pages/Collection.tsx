@@ -23,8 +23,10 @@ import TuneIcon from '@mui/icons-material/Tune';
 import DeleteIcon from '@mui/icons-material/Delete';
 import PsychologyIcon from '@mui/icons-material/Psychology';
 import ModelTrainingIcon from '@mui/icons-material/ModelTraining';
+import LabelIcon from '@mui/icons-material/Label';
 import { useGetCollectionQuery } from '../api/collectionsApi';
 import { useListDocumentsQuery, useDeleteDocumentMutation } from '../api/documentsApi';
+import { useTriggerNerPassMutation } from '../api/ingestApi';
 import IngestPanel from '../components/ingest/IngestPanel';
 import { useAppDispatch } from '../store';
 import { showSnackbar } from '../store/slices/uiSlice';
@@ -42,10 +44,20 @@ const Collection: React.FC = () => {
     { skip: !id }
   );
   const [deleteDocument] = useDeleteDocumentMutation();
+  const [triggerNer, { isLoading: nerRunning }] = useTriggerNerPassMutation();
+
+  const handleNerPass = async () => {
+    try {
+      const result = await triggerNer(id!).unwrap();
+      dispatch(showSnackbar({ message: `NER tagging started (job: ${result.job_id.slice(0, 8)}…). This may take a while.`, severity: 'info' }));
+    } catch {
+      dispatch(showSnackbar({ message: 'Failed to start NER tagging.', severity: 'error' }));
+    }
+  };
 
   const handleDeleteDoc = async (docId: string) => {
     try {
-      await deleteDocument({ id: docId, collection_id: id! }).unwrap();
+      await deleteDocument({ doc_id: docId, collection_id: id! }).unwrap();
       dispatch(showSnackbar({ message: 'Document deleted.', severity: 'success' }));
     } catch {
       dispatch(showSnackbar({ message: 'Failed to delete document.', severity: 'error' }));
@@ -109,6 +121,18 @@ const Collection: React.FC = () => {
         >
           Fine-Tune
         </Button>
+        <Tooltip title="Run spaCy + regex NER tagging on all untagged chunks (needed for Graph view)">
+          <Button
+            variant="contained"
+            color="secondary"
+            startIcon={nerRunning ? <CircularProgress size={16} color="inherit" /> : <LabelIcon />}
+            onClick={handleNerPass}
+            disabled={nerRunning}
+            size="small"
+          >
+            Tag NER
+          </Button>
+        </Tooltip>
       </Stack>
 
       <Grid container spacing={3}>

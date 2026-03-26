@@ -1,6 +1,8 @@
 import { api } from './baseApi';
 import type { Collection, CollectionCreate } from '../types/api';
 
+export type { Collection };
+
 export const collectionsApi = api.injectEndpoints({
   endpoints: (builder) => ({
     listCollections: builder.query<{ collections: Collection[] }, void>({

@@ -9,6 +9,7 @@ from app.llm.embedder import embed_texts
 from app.core.rust_bridge import get_index_manager
 from app.core.search_service import hybrid_search
 from app.core.metrics import KG_SEARCH_REQUESTS_TOTAL, KG_SEARCH_LATENCY
+import json
 import time
 import logging
 
@@ -45,7 +46,7 @@ async def search(
     return SearchResponse(
         results=[
             SearchResultItem(
-                chunk_id=r.get("chunk_id", ""),
+                chunk_id=r.get("chunk_id", r.get("id", "")),
                 doc_id=r.get("doc_id", ""),
                 doc_title=r.get("doc_title"),
                 text=r.get("text", ""),
@@ -53,9 +54,9 @@ async def search(
                 vector_score=r.get("vector_score", 0.0),
                 keyword_score=r.get("keyword_score", 0.0),
                 graph_proximity_score=r.get("graph_proximity_score", 0.0),
-                final_score=r.get("final_score", 0.0),
-                topics=r.get("topics", []),
-                highlights=r.get("highlights", []),
+                final_score=r.get("final_score", r.get("vector_score", 0.0)),
+                topics=json.loads(r["topics"]) if isinstance(r.get("topics"), str) else (r.get("topics") or []),
+                highlights=r.get("highlights") or [],
             )
             for r in results
         ],
