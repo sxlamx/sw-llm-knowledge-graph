@@ -11,11 +11,13 @@ from typing import Optional
 from app.config import get_settings
 from app.db.lancedb_client import (
     update_collection, update_ingest_job, upsert_to_table,
+    upsert_graph_node, upsert_graph_edge,
 )
 from app.llm.embedder import embed_texts
 from app.llm.extractor import (
     generate_doc_summary, generate_contextual_prefix, extract_from_chunk,
 )
+from app.llm.ner_tagger import tag_chunk, tags_to_json
 from app.pipeline.job_manager import get_job_manager
 from app.models.schemas import IngestOptions
 
@@ -220,3 +222,204 @@ async def flush_chunks(
         None,
         lambda: im.insert_chunks(collection_id, chunks_json),
     )
+
+
+async def _run_ner_only(chunk_records: list[dict]) -> dict[str, str]:
+    """Run spaCy NER on chunks without a LLM call (used when extract_entities=False)."""
+    async def _tag_one(chunk: dict) -> tuple[str, str]:
+        tags = await tag_chunk(chunk["text"], [])
+        return chunk["id"], tags_to_json(tags)
+
+    ner_map: dict[str, str] = {}
+    results = await asyncio.gather(*[_tag_one(c) for c in chunk_records], return_exceptions=True)
+    for r in results:
+        if isinstance(r, Exception):
+            continue
+        cid, tags_json = r
+        ner_map[cid] = tags_json
+    return ner_map
+
+
+async def _extract_graph(
+    chunk_records: list[dict],
+    doc_id: str,
+    collection_id: str,
+    doc_summary: str,
+    validator,
+) -> tuple[list[dict], list[dict], dict[str, str]]:
+    """Run LLM entity extraction + NER tagging on a batch of chunks.
+
+    Returns (nodes, edges, ner_tags_map) where ner_tags_map maps chunk_id → ner_tags JSON string.
+    """
+    nodes: list[dict] = []
+    edges: list[dict] = []
+
+    async def _extract_one(chunk: dict) -> tuple[list[dict], list[dict], str]:
+        async with _limiter:
+            try:
+                result = await extract_from_chunk(chunk["text"])
+            except Exception as e:
+                logger.warning(f"Extraction failed: {e}")
+                return [], [], "[]"
+
+            raw_entities = result.get("entities", [])
+            raw_relations = result.get("relationships", [])
+
+            if validator:
+                try:
+                    report_json = validator.validate(
+                        json.dumps(raw_entities),
+                        json.dumps([
+                            {
+                                "source": r.get("source", ""),
+                                "target": r.get("target", ""),
+                                "predicate": r.get("predicate", ""),
+                                "context": r.get("context", ""),
+                                "confidence": r.get("confidence", 0.5),
+                            }
+                            for r in raw_relations
+                        ]),
+                        0.4,
+                    )
+                    report = json.loads(report_json)
+                    raw_entities = [
+                        e for e in raw_entities
+                        if e.get("name") in (report.get("valid_entities") or [e.get("name")])
+                    ]
+                except Exception:
+                    pass
+
+            chunk_nodes: list[dict] = []
+            name_to_id: dict[str, str] = {}
+
+            for e in raw_entities:
+                nid = str(uuid.uuid4())
+                name_to_id[e.get("name", "")] = nid
+                chunk_nodes.append({
+                    "id": nid,
+                    "collection_id": collection_id,
+                    "label": e.get("name", ""),
+                    "entity_type": e.get("entity_type", "Concept"),
+                    "description": e.get("description", ""),
+                    "aliases": e.get("aliases", []),
+                    "confidence": float(e.get("confidence", 0.7)),
+                    "source_chunk_ids": [chunk["id"]],
+                    "topics": result.get("topics", []),
+                    "properties": {},
+                })
+
+            chunk_edges: list[dict] = []
+            for r in raw_relations:
+                src_id = name_to_id.get(r.get("source", ""))
+                tgt_id = name_to_id.get(r.get("target", ""))
+                if src_id and tgt_id:
+                    chunk_edges.append({
+                        "id": str(uuid.uuid4()),
+                        "collection_id": collection_id,
+                        "source": src_id,
+                        "source_id": src_id,
+                        "target": tgt_id,
+                        "target_id": tgt_id,
+                        "relation_type": r.get("predicate", "RELATED_TO"),
+                        "edge_type": r.get("predicate", "RELATED_TO"),
+                        "weight": float(r.get("confidence", 0.7)),
+                        "context": r.get("context", ""),
+                        "chunk_id": chunk["id"],
+                    })
+
+            try:
+                llm_ner_spans = result.get("ner_spans", [])
+                ner_tags = await tag_chunk(chunk["text"], llm_ner_spans)
+                chunk_ner_json = tags_to_json(ner_tags)
+            except Exception as e:
+                logger.warning(f"NER tagging failed for chunk {chunk['id']}: {e}")
+                chunk_ner_json = "[]"
+
+            return chunk_nodes, chunk_edges, chunk_ner_json
+
+    tasks = [asyncio.create_task(_extract_one(c)) for c in chunk_records]
+    task_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    ner_tags_map: dict[str, str] = {}
+    for chunk, r in zip(chunk_records, task_results):
+        if isinstance(r, Exception):
+            ner_tags_map[chunk["id"]] = "[]"
+            continue
+        n, e, ner_json = r
+        nodes.extend(n)
+        edges.extend(e)
+        ner_tags_map[chunk["id"]] = ner_json
+
+    return nodes, edges, ner_tags_map
+
+
+async def _flush_graph(
+    nodes: list[dict],
+    edges: list[dict],
+    collection_id: str,
+    im,
+) -> None:
+    """Persist graph nodes/edges to LanceDB and optionally load into Rust in-memory graph."""
+    merged_nodes: dict[str, dict] = {}
+    for n in nodes:
+        label = n["label"].lower()
+        if label in merged_nodes:
+            existing = merged_nodes[label]
+            existing["source_chunk_ids"] = list(
+                set(existing.get("source_chunk_ids", []) + n.get("source_chunk_ids", []))
+            )
+            existing["confidence"] = max(existing.get("confidence", 0.0), n.get("confidence", 0.0))
+        else:
+            merged_nodes[label] = dict(n)
+
+    final_nodes = list(merged_nodes.values())
+    final_edges = list(edges)
+
+    for n in final_nodes:
+        await upsert_graph_node(collection_id, n)
+    for e in final_edges:
+        await upsert_graph_edge(collection_id, e)
+
+    if im is None:
+        return
+
+    loop = asyncio.get_event_loop()
+    try:
+        rust_nodes = [
+            {
+                "id": n["id"],
+                "node_type": {"custom": n.get("entity_type", "Concept")},
+                "label": n["label"],
+                "description": n.get("description"),
+                "aliases": n.get("aliases") or [],
+                "confidence": n.get("confidence", 0.7),
+                "ontology_class": n.get("entity_type"),
+                "properties": {},
+                "collection_id": collection_id,
+                "created_at": None,
+                "updated_at": None,
+            }
+            for n in final_nodes
+        ]
+        await loop.run_in_executor(None, lambda: im.upsert_nodes(collection_id, json.dumps(rust_nodes)))
+    except Exception as e:
+        logger.warning(f"Rust upsert_nodes failed: {e}")
+
+    try:
+        rust_edges = [
+            {
+                "id": e["id"],
+                "source": e["source"],
+                "target": e["target"],
+                "edge_type": {"custom": e.get("relation_type", "RELATED_TO")},
+                "weight": e.get("weight", 0.7),
+                "context": e.get("context"),
+                "chunk_id": e.get("chunk_id"),
+                "properties": {},
+                "collection_id": collection_id,
+            }
+            for e in final_edges
+        ]
+        await loop.run_in_executor(None, lambda: im.upsert_edges(collection_id, json.dumps(rust_edges)))
+    except Exception as e:
+        logger.warning(f"Rust upsert_edges failed: {e}")

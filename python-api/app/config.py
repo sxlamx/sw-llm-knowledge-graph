@@ -78,6 +78,8 @@ class Settings(BaseSettings):
 
     # Logging
     rust_log: str = "info"
+    log_dir: str = str(_REPO_ROOT / "logs")   # hourly rotating JSON log files
+    sentry_dsn: str = ""                       # leave blank to disable Sentry
 
     @property
     def jwt_private_key(self) -> Path:

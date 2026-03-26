@@ -13,6 +13,7 @@ import time
 import os
 
 from app.config import get_settings
+from app.core.logging_config import setup_logging
 from app.core.rust_bridge import get_index_manager, _tantivy_commit_loop
 from app.core.metrics import KG_PENDING_WRITES, KG_INDEX_STATE, KG_CONCURRENT_SEARCHES
 from app.db.lancedb_client import get_lancedb, init_system_tables
@@ -23,12 +24,12 @@ from app.routers import drive, analytics, agent, finetune, admin
 from app.routers.ws import router as ws_router
 
 settings = get_settings()
-logger = logging.getLogger(__name__)
-
-logging.basicConfig(
-    level=getattr(logging, settings.rust_log.upper(), logging.INFO),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+setup_logging(
+    log_dir=settings.log_dir,
+    sentry_dsn=settings.sentry_dsn,
+    log_level=settings.rust_log,
 )
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager

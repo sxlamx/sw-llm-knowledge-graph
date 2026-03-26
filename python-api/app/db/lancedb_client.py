@@ -265,9 +265,13 @@ async def create_ingest_job(job_data: dict) -> str:
     job_data["status"] = "pending"
     job_data["progress"] = 0.0
     job_data["processed_docs"] = 0
+    job_data.setdefault("last_completed_file", "")
 
     try:
         tbl = db.open_table("ingest_jobs")
+        # Migrate: add last_completed_file if the table predates this column
+        if "last_completed_file" not in tbl.schema.names:
+            tbl.add_columns({"last_completed_file": "cast('' as string)"})
     except Exception:
         tbl = db.create_table("ingest_jobs", schema=_SYSTEM_SCHEMAS["ingest_jobs"], exist_ok=True)
 

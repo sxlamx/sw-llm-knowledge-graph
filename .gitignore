@@ -51,6 +51,7 @@ secrets/
 # Logs
 *.log
 *.log.*
+/logs/
 
 # Mac
 .DS_Store
