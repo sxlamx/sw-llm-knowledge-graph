@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.db.lancedb_client import (
     get_lancedb, get_ingest_job, update_collection, update_ingest_job,
     upsert_to_table, upsert_graph_node, upsert_graph_edge,
+    upsert_graph_nodes, upsert_graph_edges,
     get_outdated_ner_chunks, update_chunk_ner_tags, bulk_update_chunk_ner_tags,
 )
 from app.llm.embedder import embed_texts
@@ -506,10 +507,8 @@ async def _flush_graph(
     final_nodes = list(merged_nodes.values())
     final_edges = list(edges)
 
-    for n in final_nodes:
-        await upsert_graph_node(collection_id, n)
-    for e in final_edges:
-        await upsert_graph_edge(collection_id, e)
+    await upsert_graph_nodes(collection_id, final_nodes)
+    await upsert_graph_edges(collection_id, final_edges)
 
     if im is None:
         return

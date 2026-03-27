@@ -56,7 +56,14 @@ def compute_file_hash(file_path: str) -> str:
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../python-api"))
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# Route logs to persistent /logs dir (same hourly rotation as the API)
+# so they survive /tmp wipes and restarts.
+_REPO_ROOT = Path(__file__).parent.parent
+_LOG_DIR = _REPO_ROOT / "logs"
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+from app.core.logging_config import setup_logging as _setup_logging
+_setup_logging(log_dir=str(_LOG_DIR), log_level="INFO")
 logger = logging.getLogger(__name__)
 
 
