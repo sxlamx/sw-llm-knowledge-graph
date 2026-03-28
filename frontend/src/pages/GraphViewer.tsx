@@ -310,6 +310,7 @@ const GraphViewer: React.FC = () => {
 
   const [selectedCollectionId, setSelectedCollectionId] = useState(paramCollectionId ?? '');
   const [selectedDocId, setSelectedDocId] = useState(searchParams.get('doc_id') ?? '');
+  const prevCollectionIdRef = React.useRef(paramCollectionId ?? '');
   const [highlightedNodeIds, setHighlightedNodeIds] = useState<string[]>([]);
   const [detailNode, setDetailNode] = useState<GraphNode | null>(null);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
@@ -424,13 +425,14 @@ const GraphViewer: React.FC = () => {
   );
 
   useEffect(() => {
-    if (paramCollectionId) setSelectedCollectionId(paramCollectionId);
+    if (paramCollectionId && paramCollectionId !== prevCollectionIdRef.current) {
+      prevCollectionIdRef.current = paramCollectionId;
+      setSelectedCollectionId(paramCollectionId);
+      setSelectedDocId(''); // reset doc filter only when collection actually changes
+    } else if (paramCollectionId) {
+      setSelectedCollectionId(paramCollectionId);
+    }
   }, [paramCollectionId]);
-
-  // Reset doc filter when collection changes
-  useEffect(() => {
-    setSelectedDocId('');
-  }, [selectedCollectionId]);
 
   // Clear keyword filters when NER label selection changes (keywords belong to specific labels)
   useEffect(() => {

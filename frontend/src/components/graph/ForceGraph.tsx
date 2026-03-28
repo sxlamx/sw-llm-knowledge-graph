@@ -3,6 +3,7 @@ import ForceGraph2D from 'react-force-graph-2d';
 import { GraphData, GraphNode, GraphEdge } from '../../api/graphApi';
 
 export const ENTITY_TYPE_COLORS: Record<string, string> = {
+  // LLM extractor labels (TitleCase)
   Person: '#4CAF50',
   Organization: '#2196F3',
   Location: '#FF9800',
@@ -10,6 +11,20 @@ export const ENTITY_TYPE_COLORS: Record<string, string> = {
   Event: '#F44336',
   Document: '#607D8B',
   Topic: '#00BCD4',
+  // spaCy NER labels (UPPER_CASE)
+  PERSON: '#4CAF50',
+  ORG: '#2196F3',
+  GPE: '#FF9800',       // geo-political entity
+  LOC: '#FF5722',       // non-GPE location
+  LAW: '#607D8B',       // laws / acts
+  FAC: '#795548',       // facilities
+  NORP: '#00BCD4',      // nationalities / groups
+  PRODUCT: '#E91E63',
+  EVENT: '#F44336',
+  WORK_OF_ART: '#9C27B0',
+  LANGUAGE: '#009688',
+  DATE: '#78909C',
+  MONEY: '#8BC34A',
 };
 
 interface ForceGraphNode extends GraphNode {

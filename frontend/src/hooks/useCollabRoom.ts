@@ -29,7 +29,11 @@ export function useCollabRoom(collectionId: string | undefined) {
     const ws = new WebSocket(url);
 
     ws.onopen = () => {
-      if (!active) { ws.close(); return; }
+      if (!active) {
+        // StrictMode cleanup already ran — close the now-open socket cleanly
+        ws.close();
+        return;
+      }
       wsRef.current = ws;
     };
 
@@ -69,7 +73,10 @@ export function useCollabRoom(collectionId: string | undefined) {
 
     return () => {
       active = false;
-      ws.close();
+      // Only close if already open; if still connecting, onopen will close it
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
       wsRef.current = null;
       dispatch(clearPresence());
     };
