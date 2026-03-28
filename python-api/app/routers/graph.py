@@ -383,24 +383,32 @@ async def get_node_summary_endpoint(
             "Keep it to 2-3 sentences."
         )
 
-    summary = f"Summary for {node_label}"
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{settings.ollama_cloud_base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.ollama_cloud_api_key}"},
-                json={
-                    "model": settings.ollama_cloud_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 200,
-                    "temperature": 0.3,
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            summary = data["choices"][0]["message"]["content"].strip()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"LLM unavailable: {exc}")
+    # Build a static fallback summary from node metadata (used when LLM is unavailable)
+    fallback_summary = (
+        f"{node_label} is a {entity_type.lower()} entity."
+        + (f" {node_desc}" if node_desc else "")
+    ).strip()
+
+    summary = fallback_summary
+    llm_available = bool(settings.ollama_cloud_base_url)
+    if llm_available:
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    f"{settings.ollama_cloud_base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.ollama_cloud_api_key}"},
+                    json={
+                        "model": settings.ollama_cloud_model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 200,
+                        "temperature": 0.3,
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                summary = data["choices"][0]["message"]["content"].strip()
+        except Exception:
+            summary = fallback_summary
 
     now = int(__import__("time").time() * 1_000_000)
     await upsert_node_summary(collection_id, node_id, summary, chunk_hash)

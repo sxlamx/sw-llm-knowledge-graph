@@ -30,6 +30,7 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import BarChartIcon from '@mui/icons-material/BarChart';
 import BubbleChartIcon from '@mui/icons-material/BubbleChart';
 import LabelIcon from '@mui/icons-material/Label';
+import LabelOffIcon from '@mui/icons-material/LabelOff';
 import { useGetGraphDataQuery, useGetNerKeywordsQuery, GraphNode } from '../api/graphApi';
 import { useListCollectionsQuery } from '../api/collectionsApi';
 import { useListDocumentsQuery } from '../api/documentsApi';
@@ -314,6 +315,7 @@ const GraphViewer: React.FC = () => {
   const [highlightedNodeIds, setHighlightedNodeIds] = useState<string[]>([]);
   const [detailNode, setDetailNode] = useState<GraphNode | null>(null);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  const [showLabels, setShowLabels] = useState(false);
   const [nerKeywordFilters, setNerKeywordFilters] = useState<string[]>([]);
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
@@ -536,6 +538,15 @@ const GraphViewer: React.FC = () => {
 
           {selectedCollectionId && (
             <Stack direction="row" alignItems="center" spacing={0.5} sx={{ ml: 'auto' }}>
+              <Tooltip title={showLabels ? 'Hide node labels' : 'Show node labels'}>
+                <IconButton
+                  size="small"
+                  onClick={() => setShowLabels((v) => !v)}
+                  color={showLabels ? 'primary' : 'default'}
+                >
+                  {showLabels ? <LabelIcon /> : <LabelOffIcon />}
+                </IconButton>
+              </Tooltip>
               <Tooltip title={analyticsOpen ? 'Hide analytics overlay' : 'Show analytics overlay'}>
                 <IconButton
                   size="small"
@@ -710,6 +721,7 @@ const GraphViewer: React.FC = () => {
               nodeViewers={nodeViewers}
               clusterColors={clusterColors}
               nodeClusterLabels={nodeClusterLabels}
+              showLabels={showLabels}
             />
           </>
         )}

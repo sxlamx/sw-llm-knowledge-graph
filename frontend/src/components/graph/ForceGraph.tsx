@@ -3,7 +3,15 @@ import ForceGraph2D from 'react-force-graph-2d';
 import { GraphData, GraphNode, GraphEdge } from '../../api/graphApi';
 
 export const ENTITY_TYPE_COLORS: Record<string, string> = {
-  // LLM extractor labels (TitleCase)
+  // Canonical labels produced by ner_tagger.py (SPACY_TO_CANONICAL mapping)
+  PERSON: '#4CAF50',
+  ORGANIZATION: '#2196F3',
+  LOCATION: '#FF9800',
+  LAW: '#607D8B',
+  DATE: '#78909C',
+  MONEY: '#8BC34A',
+  PERCENT: '#B0BEC5',
+  // LLM extractor labels (TitleCase) — kept for forward-compat
   Person: '#4CAF50',
   Organization: '#2196F3',
   Location: '#FF9800',
@@ -11,20 +19,6 @@ export const ENTITY_TYPE_COLORS: Record<string, string> = {
   Event: '#F44336',
   Document: '#607D8B',
   Topic: '#00BCD4',
-  // spaCy NER labels (UPPER_CASE)
-  PERSON: '#4CAF50',
-  ORG: '#2196F3',
-  GPE: '#FF9800',       // geo-political entity
-  LOC: '#FF5722',       // non-GPE location
-  LAW: '#607D8B',       // laws / acts
-  FAC: '#795548',       // facilities
-  NORP: '#00BCD4',      // nationalities / groups
-  PRODUCT: '#E91E63',
-  EVENT: '#F44336',
-  WORK_OF_ART: '#9C27B0',
-  LANGUAGE: '#009688',
-  DATE: '#78909C',
-  MONEY: '#8BC34A',
 };
 
 interface ForceGraphNode extends GraphNode {
@@ -50,6 +44,8 @@ interface Props {
   clusterColors?: Record<string, string>;
   /** node_id → cluster topic label (only representative nodes have an entry) */
   nodeClusterLabels?: Record<string, string>;
+  /** Draw node labels directly on the canvas */
+  showLabels?: boolean;
   width?: number;
   height?: number;
 }
@@ -66,6 +62,7 @@ const ForceGraph: React.FC<Props> = ({
   nodeViewers,
   clusterColors,
   nodeClusterLabels,
+  showLabels = false,
   width,
   height,
 }) => {
@@ -119,14 +116,14 @@ const ForceGraph: React.FC<Props> = ({
     [analyticsScores]
   );
 
-  // Draw presence ring and/or cluster topic label
+  // Draw presence ring, cluster topic label, and/or node name label
   const nodeCanvasObject = useCallback(
     (node: object, ctx: CanvasRenderingContext2D, globalScale: number) => {
       const n = node as ForceGraphNode;
       const viewers = nodeViewers?.[n.id];
       const clusterLabel = nodeClusterLabels?.[n.id];
 
-      if (!viewers?.length && !clusterLabel) return;
+      if (!viewers?.length && !clusterLabel && !showLabels) return;
 
       const r = (5 * (analyticsScores ? 1 + (analyticsScores[n.id] ?? 0) * 8 : 1)) / Math.sqrt(globalScale);
       const x = n.x ?? 0;
@@ -157,7 +154,6 @@ const ForceGraph: React.FC<Props> = ({
         ctx.fillStyle = clusterColors?.[n.id] ?? '#444';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
-        // White background pill
         const textWidth = ctx.measureText(clusterLabel).width;
         const pad = 2 / globalScale;
         ctx.fillStyle = 'rgba(255,255,255,0.75)';
@@ -166,9 +162,25 @@ const ForceGraph: React.FC<Props> = ({
         ctx.fillText(clusterLabel, x, y + r + 2 + pad);
       }
 
+      // Node name label
+      if (showLabels) {
+        const label = n.label ?? '';
+        const fontSize = Math.max(4, 10 / globalScale);
+        ctx.font = `${fontSize}px Sans-Serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        const textWidth = ctx.measureText(label).width;
+        const pad = 1.5 / globalScale;
+        const yBase = y + r + 2;
+        ctx.fillStyle = 'rgba(255,255,255,0.80)';
+        ctx.fillRect(x - textWidth / 2 - pad, yBase, textWidth + pad * 2, fontSize + pad * 2);
+        ctx.fillStyle = '#222';
+        ctx.fillText(label, x, yBase + pad);
+      }
+
       ctx.restore();
     },
-    [nodeViewers, analyticsScores, nodeClusterLabels, clusterColors]
+    [nodeViewers, analyticsScores, nodeClusterLabels, clusterColors, showLabels]
   );
 
   return (
@@ -183,8 +195,8 @@ const ForceGraph: React.FC<Props> = ({
       linkWidth={(l: object) => Math.max((l as ForceGraphLink).weight * 2, 0.5)}
       onNodeClick={(node: object) => onNodeClick(node as GraphNode)}
       onNodeHover={onNodeHover ? (node: object | null) => onNodeHover(node as GraphNode | null) : undefined}
-      nodeCanvasObjectMode={() => (nodeViewers || nodeClusterLabels ? 'after' : undefined)}
-      nodeCanvasObject={nodeViewers || nodeClusterLabels ? nodeCanvasObject : undefined}
+      nodeCanvasObjectMode={() => (nodeViewers || nodeClusterLabels || showLabels ? 'after' : undefined)}
+      nodeCanvasObject={nodeViewers || nodeClusterLabels || showLabels ? nodeCanvasObject : undefined}
       width={width}
       height={height}
       nodeRelSize={5}
