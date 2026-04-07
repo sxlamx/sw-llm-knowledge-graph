@@ -63,7 +63,7 @@ const IngestPanel: React.FC<Props> = ({ collectionId }) => {
         folder_path: folderPath,
         options: { chunk_size_tokens: chunkSize, chunk_overlap_tokens: chunkOverlap },
       }).unwrap();
-      setActiveJobId(result.id);
+      setActiveJobId(result.job_id ?? result.id);
       setProgress(0);
       setJobStatus('running');
     } catch {

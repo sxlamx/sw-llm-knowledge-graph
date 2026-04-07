@@ -24,7 +24,7 @@ impl EntityResolver {
         &self,
         candidate: &ExtractedEntity,
         existing_nodes: &[GraphNode],
-        embedding: &[f32],
+        embeddings: &HashMap<String, Vec<f32>>,
     ) -> Resolution {
         let normalized = normalize_name(&candidate.name);
 
@@ -38,6 +38,8 @@ impl EntityResolver {
             };
         }
 
+        let candidate_emb = embeddings.get(&candidate.name).cloned().unwrap_or_default();
+
         for node in existing_nodes {
             if node.node_type.to_string() != candidate.entity_type {
                 continue;
@@ -45,9 +47,9 @@ impl EntityResolver {
 
             let dist = strsim::levenshtein(&normalized, &normalize_name(&node.label));
             if dist < self.levenshtein_threshold {
-                if !embedding.is_empty() {
-                    let node_emb = vec![0.0f32; embedding.len()];
-                    let cos_sim = cosine_similarity(embedding, &node_emb);
+                let node_emb = embeddings.get(&node.label).cloned().unwrap_or_default();
+                if !candidate_emb.is_empty() && !node_emb.is_empty() {
+                    let cos_sim = cosine_similarity(&candidate_emb, &node_emb);
                     if cos_sim > self.embedding_threshold {
                         return Resolution::Merge {
                             existing_id: node.id,
@@ -115,8 +117,7 @@ pub fn build_graph_nodes(
     let mut node_id_map: HashMap<String, Uuid> = HashMap::new();
 
     for entity in entities {
-        let emb = embeddings.get(&entity.name).cloned().unwrap_or_default();
-        let resolution = resolver.resolve(&entity, existing, &emb);
+        let resolution = resolver.resolve(&entity, existing, embeddings);
 
         match resolution {
             Resolution::Merge { existing_id, .. } => {

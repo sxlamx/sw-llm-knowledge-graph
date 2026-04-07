@@ -23,6 +23,7 @@ orchestration layer, and a React 18 frontend.
 | 11 | [11-concurrency-performance.md](./11-concurrency-performance.md) | Concurrency & Performance | **CRITICAL** — Tokio runtime config, lock ordering, concurrency primitives table, performance targets, batch write optimization, LRU cache design |
 | 12 | [12-project-structure.md](./12-project-structure.md) | Project Structure | Full directory layout, Cargo.toml dependencies, Python pyproject.toml, Docker Compose layout |
 | 13 | [13-development-roadmap.md](./13-development-roadmap.md) | Development Roadmap | 4-phase delivery plan: MVP → Graph+Ontology → Production Hardening → Advanced Features |
+| 14 | [14-ner-pipeline.md](./14-ner-pipeline.md) | NER Pipeline | spaCy `en_core_web_trf` NER, canonical label mapping, legal NER labels, batch processing, graph construction |
 
 ---
 
@@ -43,13 +44,21 @@ orchestration layer, and a React 18 frontend.
 | Frontend | React 18, TypeScript, Vite.js, Material UI v6, Redux Toolkit, RTK Query |
 | Backend API | Python FastAPI (orchestration + LLM calls) |
 | Core Engine | Rust (via PyO3/Maturin bindings) |
-| Vector + Columnar Storage | LanceDB (IVF-PQ index, MVCC) |
-| Relational Metadata | PostgreSQL (users, collections, jobs, ontology) |
+| Vector + Columnar Storage | LanceDB (IVF-PQ index, MVCC — also used for all metadata) |
+| Metadata Storage | LanceDB system tables: `users`, `collections`, `ingest_jobs`, `revoked_tokens` |
 | In-Memory Graph | petgraph (StableGraph, directed) |
 | Full-Text Search | Tantivy (BM25) |
+| Embeddings | HuggingFace sentence-transformers (`Qwen/Qwen3-Embedding-0.6B`, 1024-dim, local GPU) |
+| LLM (chat/extraction) | Ollama Cloud (`llama3.2`) — optional, gates contextual prefix and entity extraction |
+| NER | spaCy `en_core_web_trf` + legal label LLM pass |
 | Async Runtime | Tokio (multi-threaded) + Rayon (CPU parallelism) |
 | File Watching | notify crate |
 | Auth | Google OAuth 2.0 + RS256 JWT |
-| Graph Visualization | Cytoscape.js / react-force-graph-2d |
+| Graph Visualization | react-force-graph-2d |
 | Hashing | BLAKE3 (incremental update detection) |
-| Observability | tracing + OpenTelemetry + Prometheus metrics |
+| Observability | tracing + structlog (JSON) + Sentry + Prometheus metrics |
+
+> **Deviation from original spec**: The spec originally planned PostgreSQL + SQLAlchemy + Alembic for
+> relational metadata. The actual implementation uses LanceDB Arrow tables for all storage
+> (simpler deployment, no separate DB process). See `02-data-models.md` for LanceDB system table
+> schemas. PostgreSQL + Alembic migration is deferred to Phase 3 hardening if needed.

@@ -47,8 +47,8 @@ fn default_validator(threshold: f32) -> OntologyValidator {
 fn test_valid_entities_and_relationships_accepted() {
     let v = default_validator(0.4);
     let entities = vec![
-        entity("Alice", "Person", 0.9),
-        entity("Acme Corp", "Organization", 0.85),
+        entity("Alice", "PERSON", 0.9),
+        entity("Acme Corp", "ORGANIZATION", 0.85),
     ];
     let rels = vec![relationship("Alice", "Acme Corp", "works_at")];
 
@@ -68,9 +68,9 @@ fn test_valid_entities_and_relationships_accepted() {
 fn test_empty_entity_name_dropped() {
     let v = default_validator(0.4);
     let entities = vec![
-        entity("", "Person", 0.9),
-        entity("   ", "Organization", 0.9),
-        entity("Bob", "Person", 0.9),
+        entity("", "PERSON", 0.9),
+        entity("   ", "ORGANIZATION", 0.9),
+        entity("Bob", "PERSON", 0.9),
     ];
 
     let report = v.validate_batch(entities, vec![]);
@@ -96,10 +96,10 @@ fn test_confidence_below_threshold_dropped() {
     let threshold = 0.6;
     let v = default_validator(threshold);
     let entities = vec![
-        entity("Alice", "Person", 0.3),   // below
-        entity("Bob", "Person", 0.59),    // below (exclusive)
-        entity("Carol", "Person", 0.60),  // exactly at threshold — accepted
-        entity("Dave", "Person", 0.9),    // above
+        entity("Alice", "PERSON", 0.3),   // below
+        entity("Bob", "PERSON", 0.59),    // below (exclusive)
+        entity("Carol", "PERSON", 0.60),  // exactly at threshold — accepted
+        entity("Dave", "PERSON", 0.9),    // above
     ];
 
     let report = v.validate_batch(entities, vec![]);
@@ -130,9 +130,9 @@ fn test_confidence_below_threshold_dropped() {
 fn test_unknown_entity_type_dropped() {
     let v = default_validator(0.0);
     let entities = vec![
-        entity("Some Widget", "Gadget", 0.9),   // "Gadget" not in ontology
-        entity("Another", "FlyingCar", 0.9),    // also unknown
-        entity("Alice", "Person", 0.9),          // valid
+        entity("Some Widget", "GADGET", 0.9),   // "GADGET" not in ontology
+        entity("Another", "FLYINGCAR", 0.9),    // also unknown
+        entity("Alice", "PERSON", 0.9),          // valid
     ];
 
     let report = v.validate_batch(entities, vec![]);
@@ -155,12 +155,12 @@ fn test_unknown_entity_type_dropped() {
 #[test]
 fn test_ontology_subtypes_accepted() {
     let v = default_validator(0.0);
-    // "Researcher" is a subtype of "Person" in default_ontology
-    let entities = vec![entity("Dr. Smith", "Researcher", 0.9)];
+    // "Researcher" is a subtype of "PERSON" in default_ontology
+    let entities = vec![entity("Dr. Smith", "PERSON", 0.9)];
 
     let report = v.validate_batch(entities, vec![]);
 
-    assert_eq!(report.valid_entities.len(), 1, "subtype Researcher should be accepted");
+    assert_eq!(report.valid_entities.len(), 1, "PERSON should be accepted");
     assert!(report.dropped_entities.is_empty());
 }
 
@@ -172,8 +172,8 @@ fn test_ontology_subtypes_accepted() {
 fn test_unknown_relationship_type_dropped() {
     let v = default_validator(0.0);
     let entities = vec![
-        entity("Alice", "Person", 0.9),
-        entity("Berlin", "Location", 0.9),
+        entity("Alice", "PERSON", 0.9),
+        entity("Berlin", "LOCATION", 0.9),
     ];
     let rels = vec![
         relationship("Alice", "Berlin", "invented"),  // "invented" not in ontology
@@ -201,8 +201,8 @@ fn test_relationship_dropped_when_source_entity_invalid() {
     let v = default_validator(0.5);
     // Alice is below threshold, so her relationship should also be dropped
     let entities = vec![
-        entity("Alice", "Person", 0.1),       // dropped (confidence)
-        entity("Acme Corp", "Organization", 0.9),
+        entity("Alice", "PERSON", 0.1),       // dropped (confidence)
+        entity("Acme Corp", "ORGANIZATION", 0.9),
     ];
     let rels = vec![relationship("Alice", "Acme Corp", "works_at")];
 
@@ -221,14 +221,14 @@ fn test_relationship_dropped_when_source_entity_invalid() {
 fn test_related_to_requires_concept_domain_and_range() {
     let v = default_validator(0.0);
     let entities = vec![
-        entity("Machine Learning", "Concept", 0.9),
-        entity("Neural Networks", "Concept", 0.9),
-        entity("Alice", "Person", 0.9),
+        entity("Machine Learning", "CONCEPT", 0.9),
+        entity("Neural Networks", "CONCEPT", 0.9),
+        entity("Alice", "PERSON", 0.9),
     ];
     let rels = vec![
-        // valid: Concept → Concept
+        // valid: CONCEPT → CONCEPT
         relationship("Machine Learning", "Neural Networks", "related_to"),
-        // invalid: Person → Concept (domain = Concept only)
+        // invalid: PERSON → CONCEPT (domain = CONCEPT only)
         relationship("Alice", "Neural Networks", "related_to"),
     ];
 
@@ -260,11 +260,11 @@ fn test_empty_input_no_panic() {
 fn test_mentions_relationship_accepted_for_all_core_types() {
     let v = default_validator(0.0);
     let entities = vec![
-        entity("Alice", "Person", 0.9),
-        entity("Acme", "Organization", 0.9),
-        entity("Paris", "Location", 0.9),
-        entity("AI", "Concept", 0.9),
-        entity("Summit 2024", "Event", 0.9),
+        entity("Alice", "PERSON", 0.9),
+        entity("Acme", "ORGANIZATION", 0.9),
+        entity("Paris", "LOCATION", 0.9),
+        entity("AI", "CONCEPT", 0.9),
+        entity("Summit 2024", "EVENT", 0.9),
     ];
     let rels = vec![
         relationship("Alice", "Acme", "mentions"),

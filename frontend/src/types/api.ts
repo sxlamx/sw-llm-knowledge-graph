@@ -33,6 +33,7 @@ export interface CollectionCreate {
 
 export interface IngestJob {
   id: string;
+  job_id: string;
   collection_id: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
   progress: number;
@@ -77,7 +78,7 @@ export interface SearchResult {
 export interface SearchRequest {
   query: string;
   collection_ids: string[];
-  mode?: 'vector' | 'hybrid' | 'keyword';
+  mode?: 'vector' | 'hybrid' | 'keyword' | 'graph';
   topics?: string[];
   weights?: Record<string, number>;
   limit?: number;

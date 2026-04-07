@@ -4,12 +4,19 @@
 
 The system uses a hybrid storage strategy:
 
-- **LanceDB**: vector embeddings, full document/chunk/node/edge records (columnar Arrow layout)
-- **PostgreSQL**: relational metadata — users, collections, ingest jobs, ontology, feedback
+- **LanceDB**: all persistent storage — vector embeddings, chunk/node/edge/document records **and**
+  relational metadata (users, collections, ingest jobs, token revocation). LanceDB Arrow tables
+  are used in place of PostgreSQL for simplicity and zero-dependency deployment.
 - **Rust in-memory**: petgraph-backed `KnowledgeGraph` struct for fast traversal
 
-All UUIDs are v4. All timestamps are UTC ISO 8601. Embeddings are `f32` vectors of dimension 1536
-(OpenAI `text-embedding-3-large`).
+All UUIDs are v4. All timestamps are stored as Unix epoch milliseconds (int64) in LanceDB.
+Embeddings are `f32` vectors; dimension is configurable (default **1024** via
+`Qwen/Qwen3-Embedding-0.6B`). The spec value of 1536 (OpenAI `text-embedding-3-large`) is
+no longer used.
+
+> **Implementation deviation**: The original spec used PostgreSQL + SQLAlchemy + Alembic for
+> relational metadata. The current implementation uses LanceDB system tables exclusively.
+> PostgreSQL migration remains an option for Phase 3 hardening.
 
 ---
 
@@ -51,7 +58,7 @@ fn chunks_schema() -> Schema {
         Field::new("text", DataType::Utf8, false),
         Field::new("contextual_text", DataType::Utf8, false),
         Field::new("embedding", DataType::FixedSizeList(
-            Arc::new(Field::new("item", DataType::Float32, true)), 1536
+            Arc::new(Field::new("item", DataType::Float32, true)), 1024  // configurable via settings.embedding_dimension
         ), false),
         Field::new("position", DataType::Int32, false),
         Field::new("token_count", DataType::Int32, true),
@@ -146,121 +153,90 @@ frequency           Int32                               Number of chunks assigne
 
 ---
 
-## 3. PostgreSQL Tables
+## 3. LanceDB System Tables (Metadata)
 
-PostgreSQL manages all relational metadata. Row-level security enforces tenant isolation.
-All migrations managed via Alembic.
+All relational metadata is stored in LanceDB Arrow tables (no PostgreSQL dependency).
+System tables are created at startup by `init_system_tables()` in `lancedb_client.py`.
+Timestamps are stored as **Unix epoch milliseconds** (int64). Tenant isolation is by
+`user_id` field lookups — no RLS (single-process deployment).
 
 ### 3.1 `users`
 
-```sql
-CREATE TABLE users (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    google_sub  TEXT NOT NULL UNIQUE,          -- Google subject identifier
-    email       TEXT NOT NULL UNIQUE,
-    name        TEXT NOT NULL,
-    avatar_url  TEXT,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_login  TIMESTAMPTZ
-);
+```
+Field           Arrow Type    Notes
+────────────────────────────────────────────────────────────
+id              Utf8          UUID v4
+google_sub      Utf8          Google subject identifier (unique)
+email           Utf8
+name            Utf8
+avatar_url      Utf8
+role            Utf8          "user" | "admin"
+status          Utf8          "active" | "suspended"
+created_at      Int64         Unix epoch ms
+last_login      Int64         Unix epoch ms
 ```
 
 ### 3.2 `collections`
 
-```sql
-CREATE TYPE collection_status AS ENUM ('active', 'ingesting', 'error', 'archived');
-
-CREATE TABLE collections (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name         TEXT NOT NULL,
-    description  TEXT,
-    folder_path  TEXT,                         -- Local folder or null (GDrive)
-    status       collection_status NOT NULL DEFAULT 'active',
-    doc_count    INT NOT NULL DEFAULT 0,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(user_id, name)
-);
-
-CREATE INDEX idx_collections_user_id ON collections(user_id);
+```
+Field           Arrow Type    Notes
+────────────────────────────────────────────────────────────
+id              Utf8          UUID v4
+user_id         Utf8          FK → users.id (ownership check)
+name            Utf8
+description     Utf8
+folder_path     Utf8          Absolute path to local folder
+status          Utf8          "active" | "ingesting" | "error" | "archived"
+doc_count       Int32
+created_at      Int64         Unix epoch ms
+updated_at      Int64         Unix epoch ms
 ```
 
 ### 3.3 `ingest_jobs`
 
-```sql
-CREATE TYPE job_status AS ENUM ('pending', 'running', 'completed', 'failed', 'cancelled');
-
-CREATE TABLE ingest_jobs (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    collection_id  UUID NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
-    status         job_status NOT NULL DEFAULT 'pending',
-    progress       FLOAT NOT NULL DEFAULT 0.0,    -- 0.0 to 1.0
-    total_docs     INT NOT NULL DEFAULT 0,
-    processed_docs INT NOT NULL DEFAULT 0,
-    error_msg      TEXT,
-    started_at     TIMESTAMPTZ,
-    completed_at   TIMESTAMPTZ,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    options        JSONB                           -- {max_cost_usd, ocr_enabled, ...}
-);
-
-CREATE INDEX idx_ingest_jobs_collection ON ingest_jobs(collection_id);
-CREATE INDEX idx_ingest_jobs_status ON ingest_jobs(status);
+```
+Field                Arrow Type    Notes
+────────────────────────────────────────────────────────────
+id                   Utf8          UUID v4
+collection_id        Utf8          FK → collections.id
+status               Utf8          "pending" | "running" | "completed" | "failed" | "cancelled"
+progress             Float32       0.0 – 1.0
+total_docs           Int32
+processed_docs       Int32
+error_msg            Utf8
+started_at           Int64         Unix epoch ms (null = not started)
+completed_at         Int64         Unix epoch ms (null = not finished)
+created_at           Int64         Unix epoch ms
+options              Utf8          JSON blob: {max_cost_usd, ocr_enabled, ...}
+last_completed_file  Utf8          Checkpoint: last successfully flushed file path
 ```
 
-### 3.4 `ontology_entities`
+### 3.4 `revoked_tokens`
 
-```sql
-CREATE TABLE ontology_entities (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    collection_id UUID REFERENCES collections(id) ON DELETE CASCADE,  -- NULL = global
-    name          TEXT NOT NULL,
-    parent_id     UUID REFERENCES ontology_entities(id),              -- Hierarchy
-    description   TEXT,
-    attributes    JSONB,                                               -- {type, required, ...}
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(collection_id, name)
-);
+Stores refresh token JTIs that have been revoked (rotation blocklist).
+
+```
+Field           Arrow Type    Notes
+────────────────────────────────────────────────────────────
+jti             Utf8          JWT ID (UUID v4)
+revoked_at      Int64         Unix epoch ms
+expires_at      Int64         Unix epoch ms (for cleanup)
 ```
 
-### 3.5 `ontology_relationships`
+### 3.5 `drive_watch_channels`
 
-```sql
-CREATE TABLE ontology_relationships (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    collection_id UUID REFERENCES collections(id) ON DELETE CASCADE,
-    name          TEXT NOT NULL,                  -- e.g., "works_at"
-    domain        TEXT NOT NULL,                  -- Entity type for subject
-    range         TEXT NOT NULL,                  -- Entity type for object
-    inverse       TEXT,                           -- Inverse predicate name
-    description   TEXT,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(collection_id, name)
-);
+Stores Google Drive push notification channel registrations (Phase 4).
+
 ```
-
-### 3.6 `user_feedback`
-
-Stores human-in-the-loop corrections. Used to improve future LLM prompts.
-
-```sql
-CREATE TYPE feedback_action AS ENUM ('approve', 'reject', 'edit');
-
-CREATE TABLE user_feedback (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id        UUID NOT NULL REFERENCES users(id),
-    collection_id  UUID NOT NULL REFERENCES collections(id),
-    entity_id      UUID,                          -- FK → LanceDB nodes (soft ref)
-    edge_id        UUID,                          -- FK → LanceDB edges (soft ref)
-    action         feedback_action NOT NULL,
-    previous_value JSONB,                         -- Old entity/edge state
-    new_value      JSONB,                         -- New entity/edge state (for edits)
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX idx_feedback_user ON user_feedback(user_id);
-CREATE INDEX idx_feedback_entity ON user_feedback(entity_id);
+Field           Arrow Type    Notes
+────────────────────────────────────────────────────────────
+channel_id      Utf8          Drive push channel UUID
+resource_id     Utf8          Drive resource being watched
+collection_id   Utf8          FK → collections.id
+folder_id       Utf8          Google Drive folder ID
+access_token    Utf8          OAuth access token for Drive API
+expiry_ms       Int64         Token expiry (Unix ms)
+created_at      Int64         Unix epoch ms
 ```
 
 ---

@@ -1,36 +1,38 @@
 /**
- * Shared Playwright fixtures and helpers.
- *
- * The tests use a mock Google OAuth flow:  instead of going to accounts.google.com,
- * the API stub (or a test-only endpoint) accepts a preset token and issues a JWT.
- * Set E2E_DEV_TOKEN=dev_token_xxx in your environment before running.
+ * E2E test fixtures and utilities.
  */
-import { test as base, Page, expect } from '@playwright/test';
+import { type Page } from '@playwright/test';
 
-export const DEV_TOKEN = process.env.E2E_DEV_TOKEN ?? 'dev_token_e2e';
-export const API_BASE  = process.env.E2E_API_BASE ?? 'http://localhost:8333/api/v1';
-
-// ---------------------------------------------------------------------------
-// Auth helper: inject a dev JWT directly into Redux store via localStorage
-// ---------------------------------------------------------------------------
-
-export async function loginWithDevToken(page: Page): Promise<void> {
-  // authSlice initialises from `kg_user` in localStorage on import.
-  // Write it before the first page load so the Redux store hydrates correctly.
-  const user = JSON.stringify({
-    id: 'dev-user',
-    email: 'e2e@example.com',
-    name: 'E2E User',
-    picture: '',
+/**
+ * Inject a dev token into localStorage and reload.
+ */
+export async function loginWithDevToken(page: Page) {
+  await page.evaluate(() => {
+    localStorage.setItem('kg_access_token', 'dev_token_test_user');
   });
+}
 
-  await page.goto('/');
-  await page.evaluate(
-    ([key, value]) => localStorage.setItem(key, value),
-    ['kg_user', user],
-  );
-  // Reload so the app bootstraps with the persisted user
-  await page.reload();
+/**
+ * Inject a mock JWT token with specified role and user ID.
+ */
+export async function injectMockToken(page: Page, role: 'admin' | 'user', userId: string) {
+  const payload = {
+    sub: userId,
+    email: `${role}@test.local`,
+    name: `${role === 'admin' ? 'Admin' : 'Test'} User`,
+    tenant_id: userId,
+    roles: [role],
+    role: role,
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    jti: `test-jti-${Date.now()}`,
+  };
+
+  const fakeToken = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  
+  await page.evaluate((token) => {
+    localStorage.setItem('kg_access_token', token);
+  }, fakeToken);
 }
 
 // ---------------------------------------------------------------------------

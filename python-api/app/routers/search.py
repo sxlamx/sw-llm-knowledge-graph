@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends, Query
 from app.auth.middleware import get_current_user
+from app.db.lancedb_client import get_collection as get_collection_by_id
 from app.models.schemas import (
     SearchRequest, SearchResponse, SearchResultItem, SuggestionResponse,
 )
@@ -17,12 +18,25 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+async def _verify_collection_access(collection_id: str, current_user: dict) -> None:
+    """Verify user has access to a collection."""
+    collection = await get_collection_by_id(collection_id)
+    if not collection:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    if collection.get("user_id") != current_user["id"] and current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+
 @router.post("", response_model=SearchResponse)
 async def search(
     body: SearchRequest,
     current_user: dict = Depends(get_current_user),
 ):
     start = time.time()
+
+    # Verify access to all requested collections
+    for cid in body.collection_ids:
+        await _verify_collection_access(cid, current_user)
 
     try:
         results = await hybrid_search(
@@ -77,6 +91,9 @@ async def get_suggestions(
 ):
     if len(q) < 2:
         return SuggestionResponse(suggestions=[])
+
+    if collection_id:
+        await _verify_collection_access(collection_id, current_user)
 
     suggestions = [
         f"{q} applications",

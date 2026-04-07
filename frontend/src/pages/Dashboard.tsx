@@ -37,6 +37,7 @@ const Dashboard: React.FC = () => {
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [newDescription, setNewDescription] = useState('');
+  const [newFolderPath, setNewFolderPath] = useState('');
 
   const { data, isLoading } = useListCollectionsQuery();
   const [createCollection, { isLoading: isCreating }] = useCreateCollectionMutation();
@@ -45,11 +46,12 @@ const Dashboard: React.FC = () => {
   const handleCreate = async () => {
     if (!newName.trim()) return;
     try {
-      await createCollection({ name: newName, description: newDescription }).unwrap();
+      await createCollection({ name: newName, description: newDescription, folder_path: newFolderPath || undefined }).unwrap();
       dispatch(showSnackbar({ message: 'Collection created.', severity: 'success' }));
       setCreateOpen(false);
       setNewName('');
       setNewDescription('');
+      setNewFolderPath('');
     } catch {
       dispatch(showSnackbar({ message: 'Failed to create collection.', severity: 'error' }));
     }
@@ -192,6 +194,13 @@ const Dashboard: React.FC = () => {
               onChange={(e) => setNewDescription(e.target.value)}
               multiline
               rows={2}
+              fullWidth
+            />
+            <TextField
+              label="Folder path (optional)"
+              value={newFolderPath}
+              onChange={(e) => setNewFolderPath(e.target.value)}
+              placeholder="/path/to/documents"
               fullWidth
             />
           </Stack>

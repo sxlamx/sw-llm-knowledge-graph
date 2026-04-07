@@ -34,6 +34,15 @@ pub struct SearchEngine {
     pending_doc_count: Arc<AtomicU64>,
 }
 
+/// Sigmoid normalization for BM25 scores — maps raw scores to [0, 1] range.
+///
+/// BM25 scores are unbounded (typically 0–20 for short queries) so they must
+/// be normalized before weighted fusion with bounded vector/graph scores.
+#[inline]
+pub fn normalize_bm25_score(raw: f32) -> f32 {
+    raw / (raw + 1.0)
+}
+
 impl SearchEngine {
     pub fn new(index_path: &str) -> Result<Self, CoreError> {
         let mut schema_builder = Schema::builder();
@@ -76,7 +85,7 @@ impl SearchEngine {
     /// calling [`commit_pending`] either explicitly or via the batch committer.
     pub fn insert_chunks(&self, chunks: Vec<ChunkRecord>) -> Result<usize, CoreError> {
         let count = chunks.len();
-        let mut writer = self
+        let writer = self
             .writer
             .write()
             .map_err(|e| CoreError::StorageError(format!("Lock error: {}", e)))?;
@@ -114,6 +123,10 @@ impl SearchEngine {
 
         writer
             .commit()
+            .map_err(|e| CoreError::StorageError(e.to_string()))?;
+
+        self.reader
+            .reload()
             .map_err(|e| CoreError::StorageError(e.to_string()))?;
 
         self.pending_doc_count.store(0, Ordering::Release);
@@ -173,9 +186,240 @@ impl SearchEngine {
                     "id": id,
                     "text": text,
                     "doc_id": doc_id,
+                    "collection_id": cid,
+                    "bm25_score": _score,
                 }));
             }
         }
-        Ok(results)
+            Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn make_test_engine(tmpdir: &std::path::Path) -> SearchEngine {
+        SearchEngine::new(tmpdir.to_str().unwrap()).unwrap()
+    }
+
+    fn make_chunk(text: &str, collection_id: &str) -> ChunkRecord {
+        ChunkRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            doc_id: uuid::Uuid::new_v4().to_string(),
+            collection_id: collection_id.to_string(),
+            text: text.to_string(),
+            contextual_text: text.to_string(),
+            embedding: vec![0.0f32; 1024],
+            position: 0,
+            token_count: Some(2),
+            page: Some(1),
+            topics: vec![],
+            created_at: 1234567890,
+        }
+    }
+
+    #[test]
+    fn test_search_engine_new_creates_index() {
+        let tmp = tempdir().unwrap();
+        let engine = make_test_engine(tmp.path());
+        assert!(engine.pending_doc_count() == 0);
+    }
+
+    #[test]
+    fn test_insert_chunks_stages_without_commit() {
+        let tmp = tempdir().unwrap();
+        let engine = make_test_engine(tmp.path());
+
+        let chunk = make_chunk("hello world test document", "coll1");
+        let count = engine.insert_chunks(vec![chunk]).unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(engine.pending_doc_count(), 1);
+    }
+
+    #[test]
+    fn test_insert_chunks_increments_pending_count() {
+        let tmp = tempdir().unwrap();
+        let engine = make_test_engine(tmp.path());
+
+        let chunks = vec![
+            make_chunk("document one", "coll1"),
+            make_chunk("document two", "coll1"),
+            make_chunk("document three", "coll1"),
+        ];
+        engine.insert_chunks(chunks).unwrap();
+
+        assert_eq!(engine.pending_doc_count(), 3);
+    }
+
+    #[test]
+    fn test_commit_pending_returns_false_when_nothing_to_commit() {
+        let tmp = tempdir().unwrap();
+        let engine = make_test_engine(tmp.path());
+
+        let committed = engine.commit_pending().unwrap();
+        assert!(!committed, "should return false when no pending docs");
+        assert_eq!(engine.pending_doc_count(), 0);
+    }
+
+    #[test]
+    fn test_commit_pending_returns_true_when_docs_staged() {
+        let tmp = tempdir().unwrap();
+        let engine = make_test_engine(tmp.path());
+
+        engine.insert_chunks(vec![make_chunk("test content", "coll1")]).unwrap();
+        assert_eq!(engine.pending_doc_count(), 1);
+
+        let committed = engine.commit_pending().unwrap();
+        assert!(committed, "should return true when docs were committed");
+        assert_eq!(engine.pending_doc_count(), 0);
+    }
+
+    #[test]
+    fn test_commit_pending_resets_pending_count() {
+        let tmp = tempdir().unwrap();
+        let engine = make_test_engine(tmp.path());
+
+        engine.insert_chunks(vec![make_chunk("a", "c"), make_chunk("b", "c")]).unwrap();
+        assert_eq!(engine.pending_doc_count(), 2);
+
+        engine.commit_pending().unwrap();
+        assert_eq!(engine.pending_doc_count(), 0, "pending count should reset after commit");
+    }
+
+    #[test]
+    fn test_search_returns_matching_results() {
+        let tmp = tempdir().unwrap();
+        let engine = make_test_engine(tmp.path());
+
+        engine.insert_chunks(vec![make_chunk("machine learning is AI", "coll1")]).unwrap();
+        engine.commit_pending().unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let results = engine.search("coll1", "machine", 10).unwrap();
+        assert!(!results.is_empty(), "should find document with 'machine'");
+    }
+
+    #[test]
+    fn test_search_collection_isolation() {
+        let tmp = tempdir().unwrap();
+        let engine = make_test_engine(tmp.path());
+
+        engine.insert_chunks(vec![make_chunk("hello from collection A", "collA")]).unwrap();
+        engine.insert_chunks(vec![make_chunk("hello from collection B", "collB")]).unwrap();
+        engine.commit_pending().unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let results_a = engine.search("collA", "hello", 10).unwrap();
+        let results_b = engine.search("collB", "hello", 10).unwrap();
+
+        assert!(!results_a.is_empty(), "collA should have results");
+        assert!(!results_b.is_empty(), "collB should have results");
+        assert_eq!(
+            results_a.len(),
+            results_b.len(),
+            "both collections should have 1 result each"
+        );
+    }
+
+    #[test]
+    fn test_search_returns_empty_for_nonexistent_query() {
+        let tmp = tempdir().unwrap();
+        let engine = make_test_engine(tmp.path());
+
+        engine.insert_chunks(vec![make_chunk("specific unique content xyz", "coll1")]).unwrap();
+        engine.commit_pending().unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let results = engine.search("coll1", "nonexistent_term_12345", 10).unwrap();
+        assert!(results.is_empty(), "nonexistent query should return empty results");
+    }
+
+    #[test]
+    fn test_insert_multiple_collections_works() {
+        let tmp = tempdir().unwrap();
+        let engine = make_test_engine(tmp.path());
+
+        engine
+            .insert_chunks(vec![make_chunk("content for coll X", "collX")])
+            .unwrap();
+        engine
+            .insert_chunks(vec![make_chunk("content for coll Y", "collY")])
+            .unwrap();
+        engine.commit_pending().unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let results_x = engine.search("collX", "coll", 10).unwrap();
+        let results_y = engine.search("collY", "coll", 10).unwrap();
+
+        assert!(!results_x.is_empty());
+        assert!(!results_y.is_empty());
+    }
+
+    #[test]
+    fn test_search_returns_bm25_score() {
+        let tmp = tempdir().unwrap();
+        let engine = make_test_engine(tmp.path());
+
+        engine.insert_chunks(vec![make_chunk("machine learning is AI", "coll1")]).unwrap();
+        engine.commit_pending().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let results = engine.search("coll1", "machine", 10).unwrap();
+        assert!(!results.is_empty(), "should find document with 'machine'");
+
+        let r = &results[0];
+        assert!(
+            r.get("bm25_score").is_some(),
+            "result must include bm25_score field"
+        );
+        let score = r.get("bm25_score").unwrap().as_f64().unwrap() as f32;
+        assert!(
+            score > 0.0,
+            "bm25_score for matching term should be positive, got {}",
+            score
+        );
+    }
+
+    #[test]
+    fn test_bm25_normalization_zero_maps_to_zero() {
+        assert_eq!(normalize_bm25_score(0.0), 0.0);
+    }
+
+    #[test]
+    fn test_bm25_normalization_maps_to_0_1_range() {
+        let scores = [0.0f32, 0.5, 1.0, 5.0, 10.0, 100.0];
+        for s in scores {
+            let normalized = normalize_bm25_score(s);
+            assert!(
+                (0.0..=1.0).contains(&normalized),
+                "score {} normalized to {} not in [0,1]",
+                s,
+                normalized
+            );
+        }
+    }
+
+    #[test]
+    fn test_bm25_normalization_is_monotonic() {
+        let scores = [0.0f32, 1.0, 5.0, 10.0, 100.0];
+        for window in scores.windows(2) {
+            let n0 = normalize_bm25_score(window[0]);
+            let n1 = normalize_bm25_score(window[1]);
+            assert!(
+                n1 > n0,
+                "normalize_bm25_score should be monotonic: {} -> {} vs {} -> {}",
+                window[0],
+                n0,
+                window[1],
+                n1
+            );
+        }
     }
 }

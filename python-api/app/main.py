@@ -18,6 +18,7 @@ from app.core.rust_bridge import get_index_manager, _tantivy_commit_loop
 from app.core.metrics import KG_PENDING_WRITES, KG_INDEX_STATE, KG_CONCURRENT_SEARCHES
 from app.db.lancedb_client import get_lancedb, init_system_tables
 from app.auth.middleware import auth_middleware, rate_limit_middleware
+from app.auth.csrf import csrf_middleware, generate_csrf_token, set_csrf_cookie
 from app.routers import auth, collections, ingest, search, documents
 from app.routers import graph, ontology, topics
 from app.routers import drive, analytics, agent, finetune, admin
@@ -68,14 +69,17 @@ app = FastAPI(
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
+allowed_origins = [origin.strip() for origin in settings.frontend_origin.split(",") if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_origin, "http://localhost:5333"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With", "X-CSRF-Token"],
 )
 
+app.middleware("http")(csrf_middleware)
 app.middleware("http")(rate_limit_middleware)
 app.middleware("http")(auth_middleware)
 
@@ -93,6 +97,14 @@ app.include_router(agent.router, prefix="/api/v1/agent", tags=["agent"])
 app.include_router(finetune.router, prefix="/api/v1/finetune", tags=["finetune"])
 app.include_router(admin.router,   prefix="/api/v1/admin",   tags=["admin"])
 app.include_router(ws_router, tags=["websocket"])
+
+
+@app.get("/csrf-token")
+async def get_csrf_token(response: Response):
+    """Generate and return a CSRF token for the session."""
+    token = generate_csrf_token()
+    set_csrf_cookie(response, token)
+    return {"csrf_token": token}
 
 
 @app.get("/health")

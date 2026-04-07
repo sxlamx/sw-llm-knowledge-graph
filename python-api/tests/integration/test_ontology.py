@@ -268,8 +268,8 @@ class TestRustOntologyValidator:
         report with no fatal errors.
         """
         entities = json.dumps([
-            {"name": "Singapore", "entity_type": "Location", "confidence": 0.9},
-            {"name": "Registrar", "entity_type": "Person", "confidence": 0.85},
+            {"name": "Singapore", "entity_type": "Location", "confidence": 0.9, "description": "", "aliases": []},
+            {"name": "Registrar", "entity_type": "Person", "confidence": 0.85, "description": "", "aliases": []},
         ])
         relations = json.dumps([
             {"source": "Registrar", "target": "Singapore",
@@ -286,7 +286,7 @@ class TestRustOntologyValidator:
     def test_validator_rejects_low_confidence_entities(self, validator):
         """Entities below the confidence threshold must be excluded from valid_entities."""
         entities = json.dumps([
-            {"name": "Uncertain Entity", "entity_type": "Concept", "confidence": 0.1},
+            {"name": "Uncertain Entity", "entity_type": "Concept", "confidence": 0.1, "description": "", "aliases": []},
         ])
         relations = json.dumps([])
         report_json = validator.validate(entities, relations, 0.5)  # threshold=0.5
@@ -305,7 +305,7 @@ class TestRustOntologyValidator:
     def test_validator_returns_valid_json(self, validator):
         """Output must always be valid JSON regardless of input."""
         report_json = validator.validate(
-            json.dumps([{"name": "Act", "entity_type": "Concept", "confidence": 0.9}]),
+            json.dumps([{"name": "Act", "entity_type": "Concept", "confidence": 0.9, "description": "", "aliases": []}]),
             json.dumps([]),
             0.4,
         )

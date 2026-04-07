@@ -247,3 +247,163 @@ fn extract_paragraph_text(paragraph: &docx_rs::Paragraph) -> String {
     }
     text.trim().to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_extract_text_returns_content() {
+        let tmp = TempDir::new().unwrap();
+        let file_path = tmp.path().join("test.txt");
+        std::fs::write(&file_path, "Hello world\nTest content").unwrap();
+
+        let entry = FileEntry {
+            path: file_path,
+            file_type: FileType::Text,
+            size_bytes: 17,
+            modified_at: std::time::SystemTime::now(),
+            blake3_hash: None,
+        };
+
+        let extractor = DocumentExtractor;
+        let result = extractor.extract(&entry).await.unwrap();
+
+        assert_eq!(result.raw_text, "Hello world\nTest content");
+        assert_eq!(result.pages.len(), 1);
+        assert_eq!(result.pages[0].page_number, 1);
+        assert_eq!(result.pages[0].text, "Hello world\nTest content");
+    }
+
+    #[tokio::test]
+    async fn test_extract_text_uses_filename_as_title() {
+        let tmp = TempDir::new().unwrap();
+        let file_path = tmp.path().join("my_document.txt");
+        std::fs::write(&file_path, "content").unwrap();
+
+        let entry = FileEntry {
+            path: file_path,
+            file_type: FileType::Text,
+            size_bytes: 7,
+            modified_at: std::time::SystemTime::now(),
+            blake3_hash: None,
+        };
+
+        let extractor = DocumentExtractor;
+        let result = extractor.extract(&entry).await.unwrap();
+
+        assert_eq!(result.title, Some("my_document".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_extract_markdown_splits_into_pages() {
+        let tmp = TempDir::new().unwrap();
+        let file_path = tmp.path().join("test.md");
+        let lines: Vec<String> = (0..250).map(|i| format!("Line {}", i)).collect();
+        std::fs::write(&file_path, lines.join("\n")).unwrap();
+
+        let entry = FileEntry {
+            path: file_path,
+            file_type: FileType::Markdown,
+            size_bytes: 1000,
+            modified_at: std::time::SystemTime::now(),
+            blake3_hash: None,
+        };
+
+        let extractor = DocumentExtractor;
+        let result = extractor.extract(&entry).await.unwrap();
+
+        assert!(result.pages.len() >= 2, "long markdown should produce multiple pages");
+        assert!(result.title.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_extract_html_extracts_body_text() {
+        let tmp = TempDir::new().unwrap();
+        let file_path = tmp.path().join("test.html");
+        let html = r#"<!DOCTYPE html>
+<html>
+<head><title>Test Title</title></head>
+<body><p>Hello from HTML</p></body>
+</html>"#;
+        std::fs::write(&file_path, html).unwrap();
+
+        let entry = FileEntry {
+            path: file_path,
+            file_type: FileType::Html,
+            size_bytes: html.len() as u64,
+            modified_at: std::time::SystemTime::now(),
+            blake3_hash: None,
+        };
+
+        let extractor = DocumentExtractor;
+        let result = extractor.extract(&entry).await.unwrap();
+
+        assert!(result.title.is_some());
+        assert!(result.raw_text.contains("Hello from HTML"));
+    }
+
+    #[tokio::test]
+    async fn test_extract_unsupported_file_type_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let file_path = tmp.path().join("test.unknown");
+        std::fs::write(&file_path, "content").unwrap();
+
+        let entry = FileEntry {
+            path: file_path,
+            file_type: FileType::Unknown,
+            size_bytes: 7,
+            modified_at: std::time::SystemTime::now(),
+            blake3_hash: None,
+        };
+
+        let extractor = DocumentExtractor;
+        let result = extractor.extract(&entry).await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_page_content_has_correct_structure() {
+        let tmp = TempDir::new().unwrap();
+        let file_path = tmp.path().join("test.txt");
+        std::fs::write(&file_path, "Single page content").unwrap();
+
+        let entry = FileEntry {
+            path: file_path,
+            file_type: FileType::Text,
+            size_bytes: 18,
+            modified_at: std::time::SystemTime::now(),
+            blake3_hash: None,
+        };
+
+        let extractor = DocumentExtractor;
+        let result = extractor.extract(&entry).await.unwrap();
+
+        assert_eq!(result.pages.len(), 1);
+        let page = &result.pages[0];
+        assert_eq!(page.page_number, 1);
+        assert_eq!(page.text, "Single page content");
+    }
+
+    #[tokio::test]
+    async fn test_extracted_document_metadata_is_empty_for_text() {
+        let tmp = TempDir::new().unwrap();
+        let file_path = tmp.path().join("test.txt");
+        std::fs::write(&file_path, "content").unwrap();
+
+        let entry = FileEntry {
+            path: file_path,
+            file_type: FileType::Text,
+            size_bytes: 7,
+            modified_at: std::time::SystemTime::now(),
+            blake3_hash: None,
+        };
+
+        let extractor = DocumentExtractor;
+        let result = extractor.extract(&entry).await.unwrap();
+
+        assert!(result.metadata.is_empty());
+    }
+}

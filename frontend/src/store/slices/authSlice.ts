@@ -17,12 +17,16 @@ const initialState: AuthState = {
   isLoading: false,
 };
 
-// Restore user from localStorage on init (token stays in memory only)
+// Restore user + token from localStorage on init
 try {
   const storedUser = localStorage.getItem('kg_user');
+  const storedToken = localStorage.getItem('kg_access_token');
   if (storedUser) {
     initialState.user = JSON.parse(storedUser);
-    if (initialState.user) initialState.isAuthenticated = true;
+    if (initialState.user) {
+      initialState.isAuthenticated = true;
+      if (storedToken) initialState.accessToken = storedToken;
+    }
   }
 } catch {
   // localStorage not available (e.g. SSR or test environments without jsdom)
@@ -38,10 +42,12 @@ const authSlice = createSlice({
       state.isAuthenticated = true;
       state.isLoading = false;
       localStorage.setItem('kg_user', JSON.stringify(action.payload.user));
+      localStorage.setItem('kg_access_token', action.payload.accessToken);
     },
     setAccessToken: (state, action: PayloadAction<string>) => {
       state.accessToken = action.payload;
       state.isAuthenticated = true;
+      localStorage.setItem('kg_access_token', action.payload);
     },
     setLoading: (state, action: PayloadAction<boolean>) => {
       state.isLoading = action.payload;
@@ -52,6 +58,7 @@ const authSlice = createSlice({
       state.isAuthenticated = false;
       state.isLoading = false;
       localStorage.removeItem('kg_user');
+      localStorage.removeItem('kg_access_token');
     },
   },
 });

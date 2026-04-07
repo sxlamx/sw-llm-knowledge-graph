@@ -11,18 +11,24 @@ cost budgets.
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                         INGESTION PIPELINE                               │
 │                                                                          │
-│  Stage 1          Stage 2          Stage 3          Stage 4             │
+│  Stage 1          Stage 2          Stage 3*         Stage 4             │
 │  File Discovery → Text Extraction → Doc Summary  → Contextual Chunking  │
-│  (Rust)           (Rust)            (Python/LLM)    (Rust + Python/LLM) │
+│  (Rust/Python)    (Python)          (Python/LLM)*   (Python)            │
 │                                                                          │
-│  Stage 5          Stage 6          Stage 7          Stage 8             │
-│  Embedding Gen  → Entity Extract → Ontology Valid → Entity Resolution   │
-│  (Python/OpenAI)  (Python/LLM)     (Rust)           (Rust)             │
+│  Stage 5          Stage 6          Stage 7*         Stage 8*            │
+│  Embedding Gen  → NER Tagging   → LLM Entity     → Ontology Validate    │
+│  (Python/HF)      (Python/spaCy)   Extract*         (Rust)              │
+│                                    (Python/LLM)                         │
 │                                                                          │
-│  Stage 9          Stage 10                                              │
-│  Graph Construct → Index Update                                         │
-│  (Rust)            (Rust)                                               │
+│  Stage 9          Stage 10         Stage 11                             │
+│  Entity Resolve → Graph Construct → Index Update                        │
+│  (Rust)           (Rust)            (Rust)                              │
 └──────────────────────────────────────────────────────────────────────────┘
+
+* = gated behind config flag; disabled by default in Phase 1
+  Stage 3  → ENABLE_CONTEXTUAL_PREFIX=false (doc summary still runs)
+  Stage 7  → part of enable_contextual_prefix pipeline
+  Stage 7/8→ LLM entity extraction disabled by default; NER is always-on
 ```
 
 ---
@@ -280,7 +286,10 @@ impl Chunker {
 }
 ```
 
-### Contextual Prefix Generation (Python)
+### Contextual Prefix Generation (Python) — Phase 2, Config-Gated
+
+> **Config flag**: `ENABLE_CONTEXTUAL_PREFIX=false` (default). Set to `true` to enable.
+> Disabled by default in Phase 1 to avoid LLM cost and latency per chunk.
 
 For each chunk, a micro-LLM call generates a 2-sentence contextual prefix that situates the chunk
 within the document. This dramatically improves embedding quality for out-of-context chunks.
@@ -326,29 +335,115 @@ async def generate_contextual_prefix(
 
 **Implemented in**: `python-api/app/llm/embedder.py`
 
-Embeddings are generated using OpenAI `text-embedding-3-large` (1536 dimensions). Batched 100
-chunks per API call to minimize latency and cost.
+> **Deviation from original spec**: The original spec used OpenAI `text-embedding-3-large`
+> (1536-dim). The actual implementation uses a **local HuggingFace sentence-transformers model**
+> (`Qwen/Qwen3-Embedding-0.6B`, 1024-dim by default). This eliminates OpenAI embedding costs and
+> allows fully offline operation. The dimension is configurable via `settings.embedding_dimension`.
+
+Embeddings are generated using `sentence-transformers` running locally. The model is loaded once
+at startup (GPU-accelerated if available) and reused for all embedding calls.
 
 ```python
-async def embed_chunks_batch(
-    texts: list[str],
-    model: str = "text-embedding-3-large",
-    batch_size: int = 100,
-) -> list[list[float]]:
-    """Embed a list of texts, batched to respect API limits."""
-    all_embeddings = []
+# python-api/app/llm/embedder.py (simplified)
 
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i : i + batch_size]
-        response = await openai_client.embeddings.create(
-            model=model,
-            input=batch,
-            dimensions=1536,
-        )
-        embeddings = [item.embedding for item in sorted(response.data, key=lambda x: x.index)]
-        all_embeddings.extend(embeddings)
+from sentence_transformers import SentenceTransformer
+from app.config import get_settings
 
-    return all_embeddings
+settings = get_settings()
+
+# Model: Qwen/Qwen3-Embedding-0.6B (default)
+# Dimension: settings.embedding_dimension (default 1024)
+# Separate prompt instructions for passages (indexing) vs queries (search)
+
+_PASSAGE_PROMPT = ""
+_QUERY_PROMPT = "Instruct: Given a search query, retrieve relevant document passages.\nQuery: "
+
+async def embed_texts(texts: list[str]) -> list[list[float]]:
+    """Embed document passages. Model loads once; results cached by first 100 chars."""
+    ...
+
+async def embed_query(query: str) -> list[float]:
+    """Embed a search query using the query instruction prompt for Qwen3."""
+    ...
+```
+
+Key properties:
+- **Batch size**: 32 per inference call (GPU batch)
+- **Dimension truncation**: MRL — output truncated to `settings.embedding_dimension` (default 1024)
+- **In-process cache**: LRU dict keyed by first 100 chars of text
+- **Fallback**: zero vector on model load failure (logged as warning)
+
+---
+
+## 6.5. Stage 5b: NER Tagging (spaCy)
+
+**Implemented in**: `python-api/app/llm/ner_tagger.py`
+
+Named entity recognition runs as a **separate pass** over all chunks after ingestion.
+It is always-on (not gated by a config flag) and uses `en_core_web_trf` (transformer model).
+
+> **CRITICAL**: Always use `en_core_web_trf`. Never fall back to `en_core_web_sm`.
+> sm-tagged chunks produce significantly lower-quality entity extraction and must be
+> reprocessed. If trf is not installed: `python -m spacy download en_core_web_trf`
+
+### Label Mapping: `SPACY_TO_CANONICAL`
+
+spaCy labels are normalized to canonical labels before storage:
+
+```python
+SPACY_TO_CANONICAL: dict[str, str] = {
+    "PERSON": "PERSON",
+    "ORG":    "ORGANIZATION",
+    "GPE":    "LOCATION",
+    "LOC":    "LOCATION",
+    "FAC":    "LOCATION",
+    "DATE":   "DATE",
+    "TIME":   "DATE",
+    "MONEY":  "MONEY",
+    "PERCENT":"PERCENT",
+    "LAW":    "LAW",
+    "NORP":   "ORGANIZATION",  # nationalities, religious/political groups
+}
+```
+
+### Legal NER Labels (LLM pass)
+
+Domain-specific legal labels are extracted by a secondary LLM pass using the Ollama model:
+
+```python
+LEGAL_NER_LABELS = [
+    "LEGISLATION_TITLE", "LEGISLATION_REFERENCE", "STATUTE_SECTION",
+    "COURT_CASE", "JURISDICTION", "LEGAL_CONCEPT", "DEFINED_TERM",
+    "COURT", "JUDGE", "LAWYER", "PETITIONER", "RESPONDENT", "WITNESS",
+    "CASE_CITATION",
+]
+```
+
+### NER Version
+
+`NER_VERSION = 3`. Chunks store their NER version; `get_outdated_ner_chunks()` returns
+all chunks below the current version for reprocessing. Increment `NER_VERSION` whenever
+labels, logic, or the spaCy model changes.
+
+### Batch Processing
+
+NER runs in batches of 200 chunks with 16 concurrent spaCy workers. Results are written
+to LanceDB in batches to minimise per-row write overhead.
+
+```python
+_NER_BATCH_SIZE = 200    # flush to LanceDB every N results
+_NER_CONCURRENCY = 16    # parallel asyncio workers (each calls spaCy sync via executor)
+```
+
+### NER Tag Schema
+
+Each chunk's `ner_tags` column stores a JSON array of tag objects:
+
+```json
+[
+  { "label": "PERSON", "text": "John Smith", "start": 12, "end": 22, "score": 0.99 },
+  { "label": "ORGANIZATION", "text": "OpenAI", "start": 35, "end": 41, "score": 0.95 }
+]
 ```
 
 ---

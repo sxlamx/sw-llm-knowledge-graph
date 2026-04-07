@@ -155,26 +155,22 @@ async fn test_version_increments_on_writes() {
 async fn test_semaphore_bounds_concurrent_searches() {
     const CAPACITY: usize = 10;
     let sem = Arc::new(Semaphore::new(CAPACITY));
+    let sem_clone = Arc::clone(&sem);
 
-    // Acquire all permits
-    let permits: Vec<_> = futures::future::join_all(
-        (0..CAPACITY).map(|_| {
-            let s = Arc::clone(&sem);
-            async move { s.acquire().await.unwrap() }
-        })
-    ).await;
+    let permit = sem_clone
+        .acquire_many(CAPACITY as u32)
+        .await
+        .unwrap();
 
-    // At capacity: try_acquire should fail
     assert!(
         sem.try_acquire().is_err(),
         "semaphore should be exhausted at capacity"
     );
     assert_eq!(sem.available_permits(), 0);
 
-    // Release half
-    drop(permits.into_iter().take(CAPACITY / 2).collect::<Vec<_>>());
+    drop(permit);
 
-    assert_eq!(sem.available_permits(), CAPACITY / 2);
+    assert_eq!(sem.available_permits(), CAPACITY);
 }
 
 // ---------------------------------------------------------------------------

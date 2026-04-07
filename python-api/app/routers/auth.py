@@ -11,7 +11,7 @@ from app.auth.google import validate_google_id_token
 from app.auth.jwt import issue_access_token, issue_refresh_token, verify_token
 from app.auth.middleware import get_current_user
 from app.config import get_settings
-from app.db.lancedb_client import create_or_update_user, get_user_by_google_sub, get_user_by_id
+from app.db.lancedb_client import create_or_update_user, get_user_by_google_sub, get_user_by_id, revoke_token_db
 from app.models.schemas import AuthResponse, RefreshResponse, UserResponse
 
 router = APIRouter()
@@ -124,38 +124,9 @@ async def google_auth(request: Request, response: Response):
         raise HTTPException(status_code=400, detail="id_token required")
 
     if not settings.google_client_id:
-        dev_user = {
-            "id": "dev-" + str(uuid.uuid4()),
-            "google_sub": "dev-sub",
-            "email": "dev@example.com",
-            "name": "Dev User",
-            "avatar_url": None,
-        }
-        user_id = await create_or_update_user(dev_user)
-        dev_user["id"] = user_id
-
-        access_token = issue_access_token(dev_user)
-        refresh_token = issue_refresh_token(dev_user)
-
-        response.set_cookie(
-            key="kg_refresh_token",
-            value=refresh_token,
-            httponly=True,
-            secure=settings.cookie_secure,
-            samesite="strict",
-            max_age=7 * 24 * 3600,
-            path="/api/v1/auth",
-        )
-
-        return AuthResponse(
-            access_token=access_token,
-            expires_in=settings.jwt_expiry_minutes * 60,
-            user=UserResponse(
-                id=user_id,
-                email=dev_user["email"],
-                name=dev_user["name"],
-                avatar_url=None,
-            ),
+        raise HTTPException(
+            status_code=501,
+            detail="Google OAuth not configured. Set GOOGLE_CLIENT_ID environment variable."
         )
 
     user_info = await validate_google_id_token(id_token)
@@ -213,15 +184,22 @@ async def refresh_token(request: Request, response: Response):
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
+    old_jti = payload.get("jti")
+
     user = await get_user_by_id(payload["sub"])
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
     new_access = issue_access_token(user)
+    new_refresh = issue_refresh_token(user)
+
+    if old_jti:
+        from app.auth.jwt import revoke_token
+        revoke_token(old_jti)
 
     response.set_cookie(
         key="kg_refresh_token",
-        value=issue_refresh_token(user),
+        value=new_refresh,
         httponly=True,
         secure=settings.cookie_secure,
         samesite="strict",

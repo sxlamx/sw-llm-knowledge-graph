@@ -57,7 +57,7 @@ fn test_exact_label_match_resolves_to_merge() {
     let existing = vec![make_graph_node("Alice", NodeType::Person, vec![], cid)];
     let candidate = make_entity("Alice", "Person");
 
-    let resolution = resolver.resolve(&candidate, &existing, &[]);
+    let resolution = resolver.resolve(&candidate, &existing, &HashMap::new());
 
     assert!(
         matches!(resolution, Resolution::Merge { strategy: MergeStrategy::ExactMatch, .. }),
@@ -77,7 +77,7 @@ fn test_case_insensitive_label_match() {
     let existing = vec![make_graph_node("OpenAI", NodeType::Organization, vec![], cid)];
     let candidate = make_entity("openai", "Organization");
 
-    let resolution = resolver.resolve(&candidate, &existing, &[]);
+    let resolution = resolver.resolve(&candidate, &existing, &HashMap::new());
 
     assert!(
         matches!(resolution, Resolution::Merge { .. }),
@@ -102,7 +102,7 @@ fn test_alias_match_resolves_to_merge() {
     )];
     let candidate = make_entity("IBM", "Organization");
 
-    let resolution = resolver.resolve(&candidate, &existing, &[]);
+    let resolution = resolver.resolve(&candidate, &existing, &HashMap::new());
 
     assert!(
         matches!(resolution, Resolution::Merge { strategy: MergeStrategy::ExactMatch, .. }),
@@ -122,7 +122,7 @@ fn test_no_match_produces_new_node() {
     let existing = vec![make_graph_node("Alice", NodeType::Person, vec![], cid)];
     let candidate = make_entity("Quantum Computing", "Concept");
 
-    let resolution = resolver.resolve(&candidate, &existing, &[]);
+    let resolution = resolver.resolve(&candidate, &existing, &HashMap::new());
 
     assert!(
         matches!(resolution, Resolution::NewNode),
@@ -139,7 +139,7 @@ fn test_empty_existing_nodes_always_new_node() {
     let resolver = EntityResolver::new();
     let candidate = make_entity("Alice", "Person");
 
-    let resolution = resolver.resolve(&candidate, &[], &[]);
+    let resolution = resolver.resolve(&candidate, &[], &HashMap::new());
 
     assert!(matches!(resolution, Resolution::NewNode));
 }

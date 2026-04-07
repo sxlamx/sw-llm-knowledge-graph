@@ -31,7 +31,7 @@ impl WalWriter {
 
         // Count existing entries by counting newlines.
         let content = std::fs::read_to_string(path).unwrap_or_default();
-        let sequence = content.lines().count() as u64;
+        let sequence = content.lines().filter(|l| !l.trim().is_empty()).count() as u64;
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -60,9 +60,126 @@ impl WalWriter {
     /// Atomically truncate the WAL (replace with an empty file).
     /// Called after a successful checkpoint so the WAL does not grow unbounded.
     pub fn truncate(&mut self) -> std::io::Result<()> {
-        // Create (truncate) the file — atomic on POSIX via O_TRUNC.
         std::fs::File::create(&self.path)?;
         self.sequence = 0;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_wal_writer_new_creates_file() {
+        let tmp = NamedTempFile::new().unwrap();
+        let writer = WalWriter::new(tmp.path()).unwrap();
+        assert_eq!(writer.sequence, 0);
+        assert!(tmp.path().exists());
+    }
+
+    #[test]
+    fn test_wal_writer_append_increments_sequence() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut writer = WalWriter::new(tmp.path()).unwrap();
+
+        writer.append(r#"{"type":"node","id":"1"}"#).unwrap();
+        assert_eq!(writer.sequence, 1);
+
+        writer.append(r#"{"type":"edge","id":"2"}"#).unwrap();
+        assert_eq!(writer.sequence, 2);
+    }
+
+    #[test]
+    fn test_wal_writer_append_writes_line() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut writer = WalWriter::new(tmp.path()).unwrap();
+
+        writer.append(r#"{"type":"node","id":"1"}"#).unwrap();
+
+        let content = std::fs::read_to_string(tmp.path()).unwrap();
+        assert!(content.contains(r#"{"type":"node","id":"1"}"#));
+        assert!(content.ends_with("\n"));
+    }
+
+    #[test]
+    fn test_wal_writer_truncate_empties_file() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut writer = WalWriter::new(tmp.path()).unwrap();
+
+        writer.append(r#"{"type":"node"}"#).unwrap();
+        writer.append(r#"{"type":"edge"}"#).unwrap();
+        assert!(writer.sequence > 0);
+
+        writer.truncate().unwrap();
+
+        let content = std::fs::read_to_string(tmp.path()).unwrap();
+        assert!(content.is_empty(), "truncate should empty the file");
+        assert_eq!(writer.sequence, 0);
+    }
+
+    #[test]
+    fn test_wal_writer_truncate_allows_new_writes() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut writer = WalWriter::new(tmp.path()).unwrap();
+
+        writer.append(r#"{"seq":1}"#).unwrap();
+        writer.truncate().unwrap();
+        writer.append(r#"{"seq":2}"#).unwrap();
+
+        let content = std::fs::read_to_string(tmp.path()).unwrap();
+        assert!(content.contains(r#"{"seq":2}"#));
+        assert!(!content.contains("seq\":1"), "old entries should be gone after truncate");
+    }
+
+    #[test]
+    fn test_wal_writer_derives_sequence_from_existing_lines() {
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "line1\nline2\nline3\n").unwrap();
+
+        let writer = WalWriter::new(tmp.path()).unwrap();
+        assert_eq!(writer.sequence, 3, "sequence should be derived from existing lines");
+    }
+
+    #[test]
+    fn test_wal_writer_derives_sequence_from_empty_file() {
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "").unwrap();
+
+        let writer = WalWriter::new(tmp.path()).unwrap();
+        assert_eq!(writer.sequence, 0, "empty file should have sequence 0");
+    }
+
+    #[test]
+    fn test_wal_writer_derives_sequence_from_file_with_blank_lines() {
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "line1\n\nline2\n   \nline3\n").unwrap();
+
+        let writer = WalWriter::new(tmp.path()).unwrap();
+        assert_eq!(writer.sequence, 3, "blank lines should not affect sequence");
+    }
+
+    #[test]
+    fn test_wal_writer_flushes_to_disk() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut writer = WalWriter::new(tmp.path()).unwrap();
+
+        writer.append(r#"{"flush":"test"}"#).unwrap();
+        drop(writer);
+
+        let content = std::fs::read_to_string(tmp.path()).unwrap();
+        assert!(content.contains("flush"));
+    }
+
+    #[test]
+    fn test_wal_writer_multiple_append_sequence_consistency() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut writer = WalWriter::new(tmp.path()).unwrap();
+
+        for i in 0..100 {
+            writer.append(&format!(r#"{{"id":{}}}"#, i)).unwrap();
+            assert_eq!(writer.sequence, i as u64 + 1);
+        }
     }
 }

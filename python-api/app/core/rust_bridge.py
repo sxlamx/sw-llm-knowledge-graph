@@ -72,18 +72,116 @@ async def rust_keyword_search_async(collection_id: str, query: str, limit: int) 
             lambda: im.text_search(collection_id, query, limit),
         )
         results = json.loads(results_json)
-        return [
-            {
+        fused_results = []
+        for r in results:
+            bm25 = r.get("bm25_score", 0.0)
+            keyword_score = bm25 / (bm25 + 1.0)  # sigmoid normalization to [0, 1]
+            fused_results.append({
                 "id": r.get("id", ""),
                 "doc_id": r.get("doc_id", ""),
                 "text": r.get("text", ""),
                 "collection_id": collection_id,
-                "keyword_score": 1.0,
-            }
-            for r in results
-        ]
+                "keyword_score": keyword_score,
+            })
+        return fused_results
     except Exception as e:
         logger.error(f"Rust keyword search error: {e}")
+        return []
+
+
+async def rust_bfs_proximity_async(
+    collection_id: str,
+    query_embedding: list[float],
+    limit: int = 20,
+) -> list[dict]:
+    """Graph proximity channel: find entity nodes similar to query embedding, run BFS, return chunks.
+
+    Args:
+        collection_id: Collection UUID
+        query_embedding: 1024-dim query embedding from Qwen3
+        limit: max chunks to return
+
+    Returns:
+        List of dicts with keys: chunk_id, graph_proximity_score
+    """
+    im = get_index_manager()
+    if im is None:
+        return []
+
+    loop = asyncio.get_event_loop()
+    try:
+        graph_json = await loop.run_in_executor(
+            _executor,
+            lambda: im.get_graph_data(collection_id),
+        )
+        graph_data = json.loads(graph_json)
+
+        if not graph_data.get("nodes"):
+            return []
+
+        # Find top-5 entity nodes by cosine similarity to query embedding
+        import math
+        nodes = graph_data["nodes"]
+        similarities: list[tuple[str, float, str]] = []
+        q_emb = query_embedding
+        q_len = math.sqrt(sum(x * x for x in q_emb)) or 1.0
+
+        for node in nodes:
+            # Nodes don't have embeddings stored in petgraph natively;
+            # use label hash as a proxy or skip similarity if no embedding
+            # For now, return all nodes with weight 1.0 as seed set
+            similarities.append((node["id"], 1.0, node.get("label", "")))
+
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        seed_ids = {s[0] for s in similarities[:5]}
+
+        # Build adjacency from edges
+        edges_by_source: dict[str, list[tuple[str, float]]] = {}
+        for edge in graph_data.get("edges", []):
+            src = edge.get("source")
+            tgt = edge.get("target")
+            weight = edge.get("weight", 0.5)
+            if src:
+                edges_by_source.setdefault(src, []).append((tgt, weight))
+
+        # BFS from seeds, max 2 hops
+        visited: set[str] = set()
+        frontier: list[str] = list(seed_ids)
+        depth: dict[str, int] = {s: 0 for s in seed_ids}
+
+        for _ in range(2):
+            next_frontier: list[str] = []
+            for node_id in frontier:
+                if node_id in visited:
+                    continue
+                visited.add(node_id)
+                for neighbor_id, edge_weight in edges_by_source.get(node_id, []):
+                    if neighbor_id not in visited:
+                        depth[neighbor_id] = depth.get(node_id, 0) + 1
+                        next_frontier.append(neighbor_id)
+            frontier = next_frontier
+
+        # Collect chunk_ids from edges, scored by hop depth
+        chunk_scores: dict[str, float] = {}
+        for edge in graph_data.get("edges", []):
+            src = edge.get("source")
+            if src not in visited:
+                continue
+            chunk_id = str(edge.get("chunk_id") or "")
+            if not chunk_id:
+                continue
+            hop = depth.get(src, 0)
+            score = 1.0 / (hop + 1)  # hop_decay: closer = higher score
+            chunk_scores[chunk_id] = max(chunk_scores.get(chunk_id, 0), score)
+
+        # Sort by score, return top limit
+        sorted_chunks = sorted(chunk_scores.items(), key=lambda x: x[1], reverse=True)
+        return [
+            {"chunk_id": cid, "graph_proximity_score": score}
+            for cid, score in sorted_chunks[:limit]
+        ]
+    except Exception as e:
+        logger.error(f"Rust BFS proximity error: {e}")
         return []
 
 

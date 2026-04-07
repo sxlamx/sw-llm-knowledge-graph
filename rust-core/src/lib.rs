@@ -19,7 +19,7 @@ pub mod wal;
 use index_manager::IndexManager;
 use models::*;
 use ingestion::{FileScanner, DocumentExtractor, Chunker, FileEntry, FileType};
-use graph::{export_graphml, export_json, EntityResolver, Resolution, MergeStrategy};
+use graph::{export_graphml, export_json, EntityResolver, Resolution, MergeStrategy, bfs_subgraph};
 use ontology::{Ontology, OntologyValidator};
 
 #[pyclass]
@@ -270,8 +270,11 @@ pub fn resolve_entity(
     let nodes: Vec<GraphNode> = serde_json::from_str(existing_nodes_json)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
+    let mut embeddings: HashMap<String, Vec<f32>> = HashMap::new();
+    embeddings.insert(entity.name.clone(), embedding);
+
     let resolver = EntityResolver::new();
-    let resolution = resolver.resolve(&entity, &nodes, &embedding);
+    let resolution = resolver.resolve(&entity, &nodes, &embeddings);
 
     let result = match resolution {
         Resolution::Merge { existing_id, strategy } => {
@@ -318,7 +321,7 @@ pub fn check_bfs_reachable(graph_json: &str, start_id: &str, target_id: &str) ->
 }
 
 #[pyfunction]
-pub fn check_shortest_path(graph_json: &str, start_id: &str, target_id: &str) -> PyResult<Option<Vec<String>>> {
+pub fn check_shortest_path(graph_json: &str, start_id: &str, target_id: &str) -> PyResult<Option<String>> {
     use graph::traversal::find_shortest_path;
     let sg: SerializableGraph = serde_json::from_str(graph_json)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
@@ -328,7 +331,19 @@ pub fn check_shortest_path(graph_json: &str, start_id: &str, target_id: &str) ->
     let target = uuid::Uuid::parse_str(target_id)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
     let path = find_shortest_path(&graph, start, target, 10);
-    Ok(path.map(|p| p.into_iter().map(|u| u.to_string()).collect()))
+    Ok(path.map(|p| serde_json::to_string(&p).unwrap_or_default()))
+}
+
+#[pyfunction]
+pub fn get_bfs_subgraph(graph_json: &str, start_id: &str, max_hops: u32, min_weight: f32) -> PyResult<String> {
+    let sg: SerializableGraph = serde_json::from_str(graph_json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let graph = KnowledgeGraph::from(sg);
+    let start = uuid::Uuid::parse_str(start_id)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let subgraph = bfs_subgraph(&graph, start, max_hops, min_weight);
+    serde_json::to_string(&subgraph)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
 }
 
 #[pyfunction]
@@ -365,6 +380,7 @@ fn rust_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(resolve_entity, m)?)?;
     m.add_function(wrap_pyfunction!(check_bfs_reachable, m)?)?;
     m.add_function(wrap_pyfunction!(check_shortest_path, m)?)?;
+    m.add_function(wrap_pyfunction!(get_bfs_subgraph, m)?)?;
     m.add_function(wrap_pyfunction!(export_graph, m)?)?;
     Ok(())
 }

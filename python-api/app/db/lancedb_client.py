@@ -11,10 +11,27 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 from app.config import get_settings
+import re
 
 settings = get_settings()
 
 _db: Optional[lancedb.DBConnection] = None
+
+
+def _safe_id(value: str) -> str:
+    """Sanitize a UUID/string value for use in LanceDB WHERE clauses.
+    
+    Only allows alphanumeric characters, hyphens, and underscores.
+    Raises ValueError if invalid characters found.
+    """
+    if not re.match(r'^[a-zA-Z0-9_-]+$', value):
+        raise ValueError(f"Invalid ID format: {value}")
+    return value
+
+
+def _safe_str(value: str) -> str:
+    """Escape a string value for use in LanceDB WHERE clauses."""
+    return value.replace('\\', '\\\\').replace('"', '\\"')
 
 
 async def get_lancedb() -> lancedb.DBConnection:
@@ -108,9 +125,10 @@ async def get_collection(collection_id: str) -> Optional[dict]:
     db = await get_lancedb()
     try:
         tbl = db.open_table("collections")
-        result = tbl.search().where(f'id = "{collection_id}"', prefilter=True).limit(1).to_list()
+        safe_id = _safe_id(collection_id)
+        result = tbl.search().where(f'id = "{safe_id}"', prefilter=True).limit(1).to_list()
         return result[0] if result else None
-    except Exception:
+    except (ValueError, Exception):
         return None
 
 
@@ -118,7 +136,8 @@ async def get_user_by_google_sub(google_sub: str) -> Optional[dict]:
     db = await get_lancedb()
     try:
         tbl = db.open_table("users")
-        result = tbl.search().where(f'google_sub = "{google_sub}"', prefilter=True).limit(1).to_list()
+        safe_sub = _safe_str(google_sub)
+        result = tbl.search().where(f'google_sub = "{safe_sub}"', prefilter=True).limit(1).to_list()
         return result[0] if result else None
     except Exception:
         return None
@@ -128,7 +147,8 @@ async def get_user_by_email(email: str) -> Optional[dict]:
     db = await get_lancedb()
     try:
         tbl = db.open_table("users")
-        result = tbl.search().where(f'email = "{email}"', prefilter=True).limit(1).to_list()
+        safe_email = _safe_str(email)
+        result = tbl.search().where(f'email = "{safe_email}"', prefilter=True).limit(1).to_list()
         return result[0] if result else None
     except Exception:
         return None
@@ -162,9 +182,10 @@ async def get_user_by_id(user_id: str) -> Optional[dict]:
     db = await get_lancedb()
     try:
         tbl = db.open_table("users")
-        result = tbl.search().where(f'id = "{user_id}"', prefilter=True).limit(1).to_list()
+        safe_id = _safe_id(user_id)
+        result = tbl.search().where(f'id = "{safe_id}"', prefilter=True).limit(1).to_list()
         return result[0] if result else None
-    except Exception:
+    except (ValueError, Exception):
         return None
 
 

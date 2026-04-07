@@ -47,7 +47,7 @@ export default function SearchPage() {
   const [doSearch, { isLoading, error }] = useSearchMutation();
 
   const [query, setQuery] = useState('');
-  const [mode, setMode] = useState<'vector' | 'hybrid' | 'keyword'>('vector');
+  const [mode, setMode] = useState<'vector' | 'hybrid' | 'keyword' | 'graph'>('vector');
   const [selectedCollections, setSelectedCollections] = useState<string[]>(
     preselectedCollection ? [preselectedCollection] : [],
   );
@@ -117,6 +117,7 @@ export default function SearchPage() {
             <ToggleButton value="vector">Vector</ToggleButton>
             <ToggleButton value="keyword">Keyword</ToggleButton>
             <ToggleButton value="hybrid">Hybrid</ToggleButton>
+            <ToggleButton value="graph">Graph</ToggleButton>
           </ToggleButtonGroup>
 
           <Button

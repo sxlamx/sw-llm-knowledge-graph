@@ -6,6 +6,7 @@ import graphReducer from './slices/graphSlice';
 import collectionsReducer from './slices/collectionsSlice';
 import searchReducer from './slices/searchSlice';
 import { api } from '../api/baseApi';
+import { wsMiddleware } from './wsMiddleware';
 
 export const store = configureStore({
   reducer: {
@@ -17,11 +18,24 @@ export const store = configureStore({
     [api.reducerPath]: api.reducer,
   },
   middleware: (getDefaultMiddleware) =>
-    getDefaultMiddleware().concat(api.middleware),
+    getDefaultMiddleware().concat(api.middleware).concat(wsMiddleware),
 });
 
-export type RootState = ReturnType<typeof store.getState>;
 export type AppDispatch = typeof store.dispatch;
+type AuthState = ReturnType<typeof authReducer>;
+type UiState = ReturnType<typeof uiReducer>;
+type GraphState = ReturnType<typeof graphReducer>;
+type CollectionsState = ReturnType<typeof collectionsReducer>;
+type SearchState = ReturnType<typeof searchReducer>;
+type ApiState = ReturnType<typeof api.reducer>;
+export type RootState = {
+  auth: AuthState;
+  ui: UiState;
+  graph: GraphState;
+  collections: CollectionsState;
+  search: SearchState;
+  api: ApiState;
+};
 
 export const useAppDispatch = () => useDispatch<AppDispatch>();
 export const useAppSelector = <T>(selector: (state: RootState) => T) =>

@@ -32,8 +32,14 @@
 
 | Token | Algorithm | Expiry | Storage |
 |-------|-----------|--------|---------|
-| Access Token | RS256 | 10 minutes | Redux memory (NOT localStorage) |
+| Access Token | RS256 | 60 minutes (configurable via `JWT_EXPIRY_MINUTES`) | Redux memory **+ localStorage `kg_access_token`** |
 | Refresh Token | RS256 | 7 days | HttpOnly cookie (`kg_refresh_token`) |
+
+> **Implementation note**: The access token is persisted to `localStorage` as `kg_access_token`
+> in addition to Redux memory. This prevents a 401 flash on page reload (memory is cleared on
+> refresh). The `authSlice` restores the token from localStorage on app init. In production,
+> this is acceptable because the token has a short expiry (60 min), the app is served over HTTPS,
+> and no sensitive PII is stored — only the JWT itself.
 
 ### JWT Claims
 
@@ -409,25 +415,34 @@ await session.execute(
 
 ```
 Environment variables (required):
-  OPENAI_API_KEY          — OpenAI API key
   GOOGLE_CLIENT_ID        — Google OAuth client ID
   GOOGLE_CLIENT_SECRET    — Google OAuth client secret
-  DATABASE_URL            — PostgreSQL connection string
   LANCEDB_PATH            — LanceDB storage path
-  TANTIVY_PATH            — Tantivy index path
-  JWT_PRIVATE_KEY_PATH    — Path to RS256 private key PEM file
-  JWT_PUBLIC_KEY_PATH     — Path to RS256 public key PEM file
+  JWT_PRIVATE_KEY_PATH    — Path to RS256 private key PEM file (default: ./secrets/jwt_private_key.pem)
+  JWT_PUBLIC_KEY_PATH     — Path to RS256 public key PEM file (default: ./secrets/jwt_public_key.pem)
   ALLOWED_FOLDER_ROOTS    — Comma-separated list of allowed ingest roots
+
+Environment variables (optional):
+  OLLAMA_CLOUD_BASE_URL   — Ollama Cloud API base URL (enables LLM extraction / summaries)
+  OLLAMA_CLOUD_API_KEY    — Ollama Cloud API key
+  HF_TOKEN                — HuggingFace token (for private embedding models)
+  OPENAI_API_KEY          — OpenAI API key (required only for fine-tuning, Phase 4)
 
 Docker Secrets (production):
   jwt_private_key         — PEM file mounted at /run/secrets/jwt_private_key
 ```
 
+### Dev-Mode Fallback (no JWT keys)
+
+If neither `JWT_PRIVATE_KEY_PATH` nor `JWT_PUBLIC_KEY_PATH` PEM files exist on disk, the API
+accepts `dev_token_{user_id}` strings as bearer tokens (for local testing without Google OAuth).
+This fallback is automatically disabled the moment the key files are present.
+
 Rules:
 1. **No hardcoded secrets** anywhere in the codebase
 2. `.env` files are in `.gitignore` and never committed
 3. In production, secrets are mounted via Docker secrets, not environment variables
-4. The OpenAI API key is never sent to the frontend
+4. The Ollama/OpenAI API key is never sent to the frontend
 5. JWT private key is loaded once at startup and stored in application memory only
 
 ---

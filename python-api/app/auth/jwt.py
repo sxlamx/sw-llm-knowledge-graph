@@ -15,32 +15,35 @@ settings = get_settings()
 _revoked_tokens: set[str] = set()
 
 
-def _load_private_key() -> Optional[object]:
+def _load_private_key() -> object:
     if not settings.jwt_private_key.exists():
-        return None
+        raise RuntimeError(
+            f"JWT private key not found at {settings.jwt_private_key}. "
+            "Generate keys with: scripts/generate_jwt_keys.sh"
+        )
     with open(settings.jwt_private_key, "rb") as f:
         return serialization.load_pem_private_key(f.read(), password=None, backend=default_backend())
 
 
-def _load_public_key() -> Optional[object]:
+def _load_public_key() -> object:
     if not settings.jwt_public_key.exists():
-        return None
+        raise RuntimeError(
+            f"JWT public key not found at {settings.jwt_public_key}. "
+            "Generate keys with: scripts/generate_jwt_keys.sh"
+        )
     with open(settings.jwt_public_key, "rb") as f:
         return serialization.load_pem_public_key(f.read(), backend=default_backend())
 
 
 def issue_access_token(user: dict) -> str:
     private_key = _load_private_key()
-    if private_key is None:
-        return "dev_token_" + str(uuid.uuid4())
-
     now = datetime.now(timezone.utc)
     payload = {
         "sub": user["id"],
         "email": user.get("email", ""),
         "name": user.get("name", ""),
         "tenant_id": user["id"],
-        "roles": ["user"],
+        "roles": user.get("role", "user"),
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=settings.jwt_expiry_minutes)).timestamp()),
         "jti": str(uuid.uuid4()),
@@ -50,9 +53,6 @@ def issue_access_token(user: dict) -> str:
 
 def issue_refresh_token(user: dict) -> str:
     private_key = _load_private_key()
-    if private_key is None:
-        return "dev_refresh_" + str(uuid.uuid4())
-
     now = datetime.now(timezone.utc)
     payload = {
         "sub": user["id"],
@@ -66,12 +66,6 @@ def issue_refresh_token(user: dict) -> str:
 
 def verify_token(token: str) -> Optional[dict]:
     public_key = _load_public_key()
-    if public_key is None:
-        if token.startswith("dev_token_") or token.startswith("dev_refresh_"):
-            payload = {"sub": "dev-user", "email": "dev@example.com", "name": "Dev User"}
-            return payload
-        return None
-
     try:
         payload = pyjwt.decode(token, public_key, algorithms=["RS256"])
         if payload.get("jti") in _revoked_tokens:

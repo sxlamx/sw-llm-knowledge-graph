@@ -215,7 +215,7 @@ fn test_shortest_path_direct_edge() {
     // Path reconstruction: [Node(from), Node(to), Edge(…)] after reverse
     // Just verify both node IDs appear somewhere in the path
     let node_ids: Vec<uuid::Uuid> = path.iter().filter_map(|s| match s {
-        PathStep::Node(id) => Some(*id),
+        PathStep::Node(n) => Some(n.id),
         _ => None,
     }).collect();
     assert!(node_ids.contains(&a_id), "path must contain start node A");
@@ -252,7 +252,7 @@ fn test_shortest_path_multi_hop() {
     assert_eq!(path.len(), 5, "A→B→C path should have 5 PathStep elements");
 
     let node_ids: Vec<uuid::Uuid> = path.iter().filter_map(|s| match s {
-        PathStep::Node(id) => Some(*id),
+        PathStep::Node(n) => Some(n.id),
         _ => None,
     }).collect();
     assert_eq!(node_ids.len(), 3);

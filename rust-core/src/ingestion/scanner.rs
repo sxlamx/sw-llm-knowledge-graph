@@ -137,6 +137,24 @@ impl FileScanner {
             });
         }
 
+        if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+            if filename.starts_with('.') {
+                return Err(CoreError::InvalidPath(format!(
+                    "hidden file not allowed: {}",
+                    filename
+                )));
+            }
+        }
+
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if BLOCKED_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
+                return Err(CoreError::InvalidPath(format!(
+                    "blocked extension: {}",
+                    ext
+                )));
+            }
+        }
+
         Ok(())
     }
 }
@@ -200,5 +218,299 @@ impl From<notify::Event> for FileWatchEvent {
             notify::EventKind::Remove(_) => FileWatchEvent::Removed(path),
             _ => FileWatchEvent::Modified(path),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn make_scanner(tmp: &TempDir) -> FileScanner {
+        FileScanner::new(tmp.path().to_path_buf(), vec![tmp.path().to_path_buf()])
+    }
+
+    #[test]
+    fn test_validate_path_allows_file_within_root() {
+        let tmp = TempDir::new().unwrap();
+        let file_path = tmp.path().join("document.pdf");
+        std::fs::write(&file_path, b"test").unwrap();
+
+        let scanner = make_scanner(&tmp);
+        assert!(scanner.validate_path(&file_path).is_ok());
+    }
+
+    #[test]
+    fn test_validate_path_blocks_traversal_outside_root() {
+        let tmp = TempDir::new().unwrap();
+        let scanner = make_scanner(&tmp);
+
+        let traversal_path = tmp.path().join("..").join("..").join("etc").join("passwd");
+        let result = scanner.validate_path(&traversal_path);
+        assert!(result.is_err(), "path traversal should be blocked");
+    }
+
+    #[test]
+    fn test_validate_path_blocks_exe_extension() {
+        let tmp = TempDir::new().unwrap();
+        let exe_path = tmp.path().join("tool.exe");
+        std::fs::write(&exe_path, b"binary").unwrap();
+
+        let scanner = make_scanner(&tmp);
+        let result = scanner.validate_path(&exe_path);
+        assert!(result.is_err(), ".exe files should be blocked");
+    }
+
+    #[test]
+    fn test_validate_path_blocks_pem_extension() {
+        let tmp = TempDir::new().unwrap();
+        let pem_path = tmp.path().join("key.pem");
+        std::fs::write(&pem_path, b"cert").unwrap();
+
+        let scanner = make_scanner(&tmp);
+        let result = scanner.validate_path(&pem_path);
+        assert!(result.is_err(), ".pem files should be blocked");
+    }
+
+    #[test]
+    fn test_validate_path_blocks_sh_extension() {
+        let tmp = TempDir::new().unwrap();
+        let sh_path = tmp.path().join("script.sh");
+        std::fs::write(&sh_path, b"#!/bin/bash").unwrap();
+
+        let scanner = make_scanner(&tmp);
+        let result = scanner.validate_path(&sh_path);
+        assert!(result.is_err(), ".sh files should be blocked");
+    }
+
+    #[test]
+    fn test_validate_path_blocks_py_extension() {
+        let tmp = TempDir::new().unwrap();
+        let py_path = tmp.path().join("script.py");
+        std::fs::write(&py_path, b"print('hello')").unwrap();
+
+        let scanner = make_scanner(&tmp);
+        let result = scanner.validate_path(&py_path);
+        assert!(result.is_err(), ".py files should be blocked");
+    }
+
+    #[test]
+    fn test_validate_path_allows_pdf() {
+        let tmp = TempDir::new().unwrap();
+        let pdf_path = tmp.path().join("document.pdf");
+        std::fs::write(&pdf_path, b"%PDF-1.4 test").unwrap();
+
+        let scanner = make_scanner(&tmp);
+        assert!(scanner.validate_path(&pdf_path).is_ok());
+    }
+
+    #[test]
+    fn test_validate_path_allows_docx() {
+        let tmp = TempDir::new().unwrap();
+        let docx_path = tmp.path().join("document.docx");
+        std::fs::write(&docx_path, b"PK\x03\x04").unwrap();
+
+        let scanner = make_scanner(&tmp);
+        assert!(scanner.validate_path(&docx_path).is_ok());
+    }
+
+    #[test]
+    fn test_validate_path_blocks_sqlite_db() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("data.sqlite");
+        std::fs::write(&db_path, b"SQLite format 3").unwrap();
+
+        let scanner = make_scanner(&tmp);
+        let result = scanner.validate_path(&db_path);
+        assert!(result.is_err(), ".sqlite files should be blocked");
+    }
+
+    #[test]
+    fn test_validate_path_blocks_env_file() {
+        let tmp = TempDir::new().unwrap();
+        let env_path = tmp.path().join(".env");
+        std::fs::write(&env_path, b"API_KEY=secret").unwrap();
+
+        let scanner = make_scanner(&tmp);
+        let result = scanner.validate_path(&env_path);
+        assert!(result.is_err(), ".env files should be blocked");
+    }
+
+    #[test]
+    fn test_compute_blake3_hash_computes_deterministic_hash() {
+        let tmp = TempDir::new().unwrap();
+        let file_path = tmp.path().join("test.txt");
+        std::fs::write(&file_path, b"Hello world").unwrap();
+
+        let hash1 = compute_blake3_hash(&file_path).unwrap();
+        let hash2 = compute_blake3_hash(&file_path).unwrap();
+
+        assert_eq!(hash1, hash2, "hash should be deterministic");
+        assert_eq!(hash1.len(), 32, "BLAKE3 produces 32-byte hash");
+    }
+
+    #[test]
+    fn test_compute_blake3_hash_different_content_different_hash() {
+        let tmp = TempDir::new().unwrap();
+
+        let file1 = tmp.path().join("a.txt");
+        let file2 = tmp.path().join("b.txt");
+        std::fs::write(&file1, b"content A").unwrap();
+        std::fs::write(&file2, b"content B").unwrap();
+
+        let hash1 = compute_blake3_hash(&file1).unwrap();
+        let hash2 = compute_blake3_hash(&file2).unwrap();
+
+        assert_ne!(hash1, hash2, "different content should produce different hash");
+    }
+
+    #[test]
+    fn test_hash_matches_with_matching_stored_hash() {
+        let tmp = TempDir::new().unwrap();
+        let file_path = tmp.path().join("test.txt");
+        std::fs::write(&file_path, b"Hello world").unwrap();
+
+        let hash = compute_blake3_hash(&file_path).unwrap();
+        let hash_hex = blake3::Hash::from_bytes(hash).to_hex().to_string();
+
+        assert!(hash_matches(Some(&hash_hex), &hash));
+    }
+
+    #[test]
+    fn test_hash_matches_with_none_stored_returns_false() {
+        let hash = [0u8; 32];
+        assert!(!hash_matches(None, &hash));
+    }
+
+    #[test]
+    fn test_hash_matches_with_mismatched_hash() {
+        let stored = "0000000000000000000000000000000000000000000000000000000000000000";
+        let computed = [1u8; 32];
+        assert!(!hash_matches(Some(stored), &computed));
+    }
+
+    #[test]
+    fn test_scan_finds_supported_files_only() {
+        let tmp = TempDir::new().unwrap();
+
+        std::fs::write(tmp.path().join("doc.pdf"), b"pdf").unwrap();
+        std::fs::write(tmp.path().join("doc.md"), b"markdown").unwrap();
+        std::fs::write(tmp.path().join("readme.txt"), b"text").unwrap();
+        std::fs::write(tmp.path().join("script.py"), b"python").unwrap();
+        std::fs::write(tmp.path().join("data.db"), b"database").unwrap();
+
+        let scanner = FileScanner::new(
+            tmp.path().to_path_buf(),
+            vec![tmp.path().to_path_buf()],
+        );
+        let entries = scanner.scan().unwrap();
+
+        assert_eq!(entries.len(), 3);
+        assert!(entries.iter().all(|e| e.file_type != FileType::Unknown));
+        assert!(entries.iter().all(|e| {
+            matches!(e.file_type, FileType::Pdf | FileType::Markdown | FileType::Text)
+        }));
+    }
+
+    #[test]
+    fn test_scan_respects_max_files_limit() {
+        let tmp = TempDir::new().unwrap();
+
+        for i in 0..20 {
+            std::fs::write(tmp.path().join(format!("doc_{}.txt", i)), b"content").unwrap();
+        }
+
+        let scanner = FileScanner::new(
+            tmp.path().to_path_buf(),
+            vec![tmp.path().to_path_buf()],
+        )
+        .with_max_files(5);
+
+        let entries = scanner.scan().unwrap();
+        assert_eq!(entries.len(), 5, "should respect max_files limit");
+    }
+
+    #[test]
+    fn test_scan_respects_max_depth() {
+        let tmp = TempDir::new().unwrap();
+
+        std::fs::create_dir_all(tmp.path().join("level1").join("level2").join("level3")).unwrap();
+        std::fs::write(tmp.path().join("root.txt"), b"root").unwrap();
+        std::fs::write(tmp.path().join("level1").join("l1.txt"), b"level1").unwrap();
+        std::fs::write(tmp.path().join("level1").join("level2").join("l2.txt"), b"level2").unwrap();
+        std::fs::write(
+            tmp.path().join("level1").join("level2").join("level3").join("l3.txt"),
+            b"level3",
+        )
+        .unwrap();
+
+        let scanner_depth2 = FileScanner::new(
+            tmp.path().to_path_buf(),
+            vec![tmp.path().to_path_buf()],
+        )
+        .with_max_depth(2);
+
+        let entries = scanner_depth2.scan().unwrap();
+        assert!(entries.iter().any(|e| e.path.file_name().unwrap() == "root.txt"));
+        assert!(entries.iter().any(|e| e.path.file_name().unwrap() == "l1.txt"));
+        assert!(!entries.iter().any(|e| e.path.file_name().unwrap() == "l2.txt"));
+        assert!(!entries.iter().any(|e| e.path.file_name().unwrap() == "l3.txt"));
+    }
+
+    #[test]
+    fn test_scan_sorts_by_modified_at_descending() {
+        let tmp = TempDir::new().unwrap();
+
+        std::fs::write(tmp.path().join("old.txt"), b"old").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(tmp.path().join("new.txt"), b"new").unwrap();
+
+        let scanner = FileScanner::new(
+            tmp.path().to_path_buf(),
+            vec![tmp.path().to_path_buf()],
+        );
+        let entries = scanner.scan().unwrap();
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0].path.file_name().unwrap().to_str().unwrap(),
+            "new.txt",
+            "newest file should be first"
+        );
+    }
+
+    #[test]
+    fn test_file_type_from_extension() {
+        assert_eq!(FileType::from_extension("pdf"), Some(FileType::Pdf));
+        assert_eq!(FileType::from_extension("PDF"), Some(FileType::Pdf));
+        assert_eq!(FileType::from_extension("docx"), Some(FileType::Docx));
+        assert_eq!(FileType::from_extension("md"), Some(FileType::Markdown));
+        assert_eq!(FileType::from_extension("markdown"), Some(FileType::Markdown));
+        assert_eq!(FileType::from_extension("txt"), Some(FileType::Text));
+        assert_eq!(FileType::from_extension("html"), Some(FileType::Html));
+        assert_eq!(FileType::from_extension("htm"), Some(FileType::Html));
+        assert_eq!(FileType::from_extension("rst"), Some(FileType::Rst));
+        assert_eq!(FileType::from_extension("unknown"), None);
+        assert_eq!(FileType::from_extension("exe"), None);
+    }
+
+    #[test]
+    fn test_file_watch_event_from_notify_created() {
+        use notify::EventKind;
+        let path = std::path::PathBuf::from("/tmp/test.txt");
+        let event = notify::Event::new(EventKind::Create(notify::event::CreateKind::File))
+            .add_path(path.clone());
+        let watch_event = FileWatchEvent::from(event);
+        assert!(matches!(watch_event, FileWatchEvent::Created(p) if p == path));
+    }
+
+    #[test]
+    fn test_file_watch_event_from_notify_removed() {
+        use notify::EventKind;
+        let path = std::path::PathBuf::from("/tmp/test.txt");
+        let event = notify::Event::new(EventKind::Remove(notify::event::RemoveKind::File))
+            .add_path(path.clone());
+        let watch_event = FileWatchEvent::from(event);
+        assert!(matches!(watch_event, FileWatchEvent::Removed(p) if p == path));
     }
 }

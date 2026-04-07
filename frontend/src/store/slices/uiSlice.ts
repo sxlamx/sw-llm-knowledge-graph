@@ -5,6 +5,7 @@ interface UiState {
   sidebarOpen: boolean;
   themeMode: 'light' | 'dark';
   snackbar: { open: boolean; message: string; severity: 'success' | 'error' | 'info' | 'warning' };
+  jobStatuses: Record<string, { status: string; progress: number }>;
 }
 
 const initialState: UiState = {
@@ -12,6 +13,7 @@ const initialState: UiState = {
   sidebarOpen: true,
   themeMode: 'light',
   snackbar: { open: false, message: '', severity: 'info' },
+  jobStatuses: {},
 };
 
 const uiSlice = createSlice({
@@ -40,9 +42,20 @@ const uiSlice = createSlice({
     closeSnackbar: (state) => {
       state.snackbar.open = false;
     },
+    updateJobStatus: (state, action: PayloadAction<{ jobId: string; status?: string; progress?: number }>) => {
+      if (!state.jobStatuses[action.payload.jobId]) {
+        state.jobStatuses[action.payload.jobId] = { status: 'unknown', progress: 0 };
+      }
+      if (action.payload.status !== undefined) {
+        state.jobStatuses[action.payload.jobId].status = action.payload.status;
+      }
+      if (action.payload.progress !== undefined) {
+        state.jobStatuses[action.payload.jobId].progress = action.payload.progress;
+      }
+    },
   },
 });
 
-export const { setDrawerOpen, setSidebarOpen, toggleTheme, showSnackbar, closeSnackbar } =
+export const { setDrawerOpen, setSidebarOpen, toggleTheme, showSnackbar, closeSnackbar, updateJobStatus } =
   uiSlice.actions;
 export default uiSlice.reducer;

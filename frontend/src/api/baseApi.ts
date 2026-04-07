@@ -1,6 +1,6 @@
 import { createApi, fetchBaseQuery, BaseQueryFn, FetchArgs, FetchBaseQueryError } from '@reduxjs/toolkit/query/react';
 import type { RootState } from '../store';
-import { setCredentials, clearCredentials } from '../store/authSlice';
+import { setCredentials, setAccessToken, clearCredentials } from '../store/authSlice';
 
 const rawBaseQuery = fetchBaseQuery({
   baseUrl: '/api/v1',
@@ -33,6 +33,8 @@ const baseQueryWithReauth: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQue
       const state = api.getState() as RootState;
       if (state.auth.user) {
         api.dispatch(setCredentials({ accessToken: data.access_token, user: state.auth.user as import('../types/api').User }));
+      } else {
+        api.dispatch(setAccessToken(data.access_token));
       }
       result = await rawBaseQuery(args, api, extraOptions);
     } else {
@@ -46,6 +48,6 @@ const baseQueryWithReauth: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQue
 export const api = createApi({
   reducerPath: 'api',
   baseQuery: baseQueryWithReauth,
-  tagTypes: ['Collection', 'IngestJob', 'Document', 'SearchResult', 'Ontology', 'GraphNode'],
+  tagTypes: ['Collection', 'IngestJob', 'Document', 'SearchResult', 'Ontology', 'GraphNode', 'Graph', 'Node', 'Topic'],
   endpoints: () => ({}),
 });

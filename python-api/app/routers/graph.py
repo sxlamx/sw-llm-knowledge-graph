@@ -31,6 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
 from app.auth.middleware import get_current_user
+from app.db.lancedb_client import get_collection as get_collection_by_id
 from app.db.lancedb_client import (
     get_collection,
     list_graph_nodes,
@@ -86,10 +87,10 @@ def _edge_to_response(e: dict) -> GraphEdgeResponse:
 
 
 async def _require_collection_access(collection_id: str, current_user: dict) -> dict:
-    collection = await get_collection(collection_id)
+    collection = await get_collection_by_id(collection_id)
     if not collection:
         raise HTTPException(status_code=404, detail="Collection not found")
-    if collection.get("user_id") != current_user["id"]:
+    if collection.get("user_id") != current_user["id"] and current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
     return collection
 
@@ -444,15 +445,18 @@ async def get_path(
         im = get_index_manager()
         if im is not None:
             graph_json = im.get_graph_data(collection_id)
-            path = check_shortest_path(graph_json, start_id, end_id)
-            if path:
-                path_nodes = [_node_to_response(node_map[nid]) for nid in path if nid in node_map]
+            path_json = check_shortest_path(graph_json, start_id, end_id)
+            if path_json:
+                import json
+                path_steps = json.loads(path_json) if isinstance(path_json, str) else path_json
+                path_node_ids = [s["data"]["id"] for s in path_steps if s.get("type") == "Node"]
+                path_nodes = [_node_to_response(node_map[nid]) for nid in path_node_ids if nid in node_map]
                 path_edges = [
                     _edge_to_response(e) for e in all_edges
-                    if e.get("source", e.get("source_id")) in path
-                    and e.get("target", e.get("target_id")) in path
+                    if e.get("source", e.get("source_id")) in path_node_ids
+                    and e.get("target", e.get("target_id")) in path_node_ids
                 ]
-                return GraphPathResponse(path=path, nodes=path_nodes, edges=path_edges)
+                return GraphPathResponse(path=path_node_ids, nodes=path_nodes, edges=path_edges)
     except Exception:
         pass
 

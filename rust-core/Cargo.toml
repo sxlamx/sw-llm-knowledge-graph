@@ -8,8 +8,7 @@ name = "rust_core"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module"] }
-pyo3-build-config = "0.22"
+pyo3 = { version = "0.22", features = ["auto-initialize"] }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 rayon = "1"
@@ -41,7 +40,6 @@ async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 
 [build-dependencies]
-pyo3-build-config = "0.22"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

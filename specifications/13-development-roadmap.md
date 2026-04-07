@@ -22,54 +22,54 @@ and run basic semantic searches. No graph visualization, no ontology, no hybrid 
 
 ### Rust Core Deliverables
 
-- [ ] Project scaffold with PyO3/Maturin build (`cargo build` → `.so`)
-- [ ] `IndexManager` struct: basic LanceDB connection, table creation, state AtomicU8
-- [ ] File scanner (`scanner.rs`): recursive scan, BLAKE3 hash, supported extensions
-- [ ] Text extractor (`extractor.rs`): PDF, TXT, Markdown extraction
-- [ ] Chunker (`chunker.rs`): fixed-size 512-token chunks with 50-token overlap
-- [ ] LanceDB ops (`storage/lancedb.rs`): table creation, Arrow RecordBatch insert, vector search
-- [ ] Basic vector search: cosine similarity, limit, no filters
-- [ ] PyO3 bindings: `PyIndexManager` with `scan_folder`, `insert_chunks`, `vector_search` methods
+- [x] Project scaffold with PyO3/Maturin build (`cargo build` → `.so`)
+- [x] `IndexManager` struct: basic LanceDB connection, table creation, state AtomicU8
+- [x] File scanner (`scanner.rs`): recursive scan, BLAKE3 hash, supported extensions
+- [x] Text extractor (`extractor.rs`): PDF, TXT, Markdown extraction (Python: pymupdf)
+- [x] Chunker (`chunker.rs`): fixed-size 512-token chunks with 50-token overlap
+- [x] LanceDB ops (`storage/lancedb.rs`): table creation, Arrow RecordBatch insert, vector search
+- [x] Basic vector search: cosine similarity, limit, no filters
+- [x] PyO3 bindings: `IndexManager` with `scan_folder`, `insert_chunks`, `vector_search` methods
 
 ### Python API Deliverables
 
-- [ ] FastAPI app skeleton: CORS, health check, startup/shutdown hooks
-- [ ] Google OAuth: ID token validation (`google-auth` library)
-- [ ] RS256 JWT: issue access + refresh tokens, rotation, middleware
-- [ ] PostgreSQL: SQLAlchemy models (`users`, `collections`, `ingest_jobs`), Alembic migrations
-- [ ] `POST /auth/google`, `POST /auth/refresh`, `POST /auth/logout`
-- [ ] `GET/POST/DELETE /collections`
-- [ ] `POST /ingest/folder`: start job, dispatch to ingest worker
-- [ ] Ingest worker: scan → extract → chunk → embed (OpenAI) → insert to LanceDB
-- [ ] `GET /ingest/jobs/{id}`: polling endpoint (no SSE yet)
-- [ ] `POST /search`: vector-only search, return top 20 chunks
-- [ ] `GET /documents`: list documents in collection
-- [ ] OpenAI embedder: `text-embedding-3-large`, batched 100 chunks
+- [x] FastAPI app skeleton: CORS, health check, startup/shutdown hooks
+- [x] Google OAuth: ID token validation (`google-auth` library)
+- [x] RS256 JWT: issue access + refresh tokens, rotation, middleware
+- [x] LanceDB system tables for users/collections/ingest_jobs (replaces PostgreSQL — see `02-data-models.md`)
+- [x] `POST /auth/google`, `POST /auth/refresh`, `POST /auth/logout`
+- [x] `GET/POST/DELETE /collections`
+- [x] `POST /ingest/folder`: start job, dispatch to ingest worker
+- [x] Ingest worker: scan → extract → chunk → embed (HuggingFace local) → insert to LanceDB
+- [x] `GET /ingest/jobs/{id}`: polling endpoint
+- [x] `POST /search`: vector-only search, return top 20 chunks
+- [x] `GET /documents`: list documents in collection
+- [x] HuggingFace embedder: `Qwen/Qwen3-Embedding-0.6B`, local GPU, 1024-dim (replaces OpenAI)
 
 ### Frontend Deliverables
 
-- [ ] React + Vite + TypeScript project setup
-- [ ] Material UI v6 theme (light mode only)
-- [ ] Google OAuth login page (`/`)
-- [ ] JWT auth flow with RTK Query base API (auto-refresh on 401)
-- [ ] Collections dashboard (`/dashboard`): MUI DataGrid, create/delete
-- [ ] Collection page (`/collection/:id`): document list, ingest folder input
-- [ ] Basic search page (`/search`): query input, result cards (text + doc title + page)
-- [ ] Navigation: AppBar + route structure
+- [x] React + Vite + TypeScript project setup
+- [x] Material UI v6 theme (light mode only)
+- [x] Google OAuth login page (`/`)
+- [x] JWT auth flow with RTK Query base API (auto-refresh on 401)
+- [x] Collections dashboard (`/dashboard`): MUI DataGrid, create/delete
+- [x] Collection page (`/collection/:id`): document list, ingest folder input
+- [x] Basic search page (`/search`): query input, result cards (text + doc title + page)
+- [x] Navigation: AppBar + route structure
 
 ### Docker Compose
 
-- [ ] `python-api` service with Rust extension bundled
-- [ ] `postgres` service with health check
-- [ ] Volume mounts for LanceDB, Tantivy, documents
-- [ ] `.env.example` with all required variables
+- [x] `python-api` service with Rust extension bundled
+- [ ] ~~`postgres` service~~ — replaced by LanceDB system tables
+- [x] Volume mounts for LanceDB, documents
+- [x] `.env.example` with all required variables
 
 ### Phase 1 Acceptance Criteria
 
-1. User can log in with Google → lands on dashboard
-2. User can create a collection and start an ingest job on a folder of PDFs
-3. After ingest, user can run a natural language query and see relevant text chunks
-4. Docker Compose `up` starts the full stack from a clean state
+1. ✅ User can log in with Google → lands on dashboard
+2. ✅ User can create a collection and start an ingest job on a folder of PDFs
+3. ✅ After ingest, user can run a natural language query and see relevant text chunks
+4. ✅ Docker Compose `up` starts the full stack from a clean state
 
 ---
 
@@ -79,57 +79,60 @@ and run basic semantic searches. No graph visualization, no ontology, no hybrid 
 
 ### Rust Core Deliverables
 
-- [ ] `OntologyValidator` (`ontology/`): validate entity types, domain/range, confidence threshold
-- [ ] `EntityResolver` (`graph/builder.rs`): exact match + Levenshtein + cosine similarity merge
-- [ ] `KnowledgeGraph` struct (`models.rs`): nodes/edges/adjacency HashMaps, version AtomicU64
-- [ ] Graph construction flow: LLM output → validate → resolve → upsert LanceDB → update petgraph
-- [ ] BFS traversal (`graph/traversal.rs`): batched hops, min-weight pruning
-- [ ] Dijkstra path finding (`graph/traversal.rs`)
-- [ ] `Arc<RwLock<KnowledgeGraph>>` locking pattern (search read-lock, write lock)
-- [ ] Tantivy BM25 index (`storage/tantivy.rs`): index chunks, commit batcher (500ms)
-- [ ] Hybrid search: 3-channel parallel (`tokio::join!`), score fusion (0.6/0.3/0.1)
+- [x] `OntologyValidator` (`ontology/`): validate entity types, domain/range, confidence threshold
+- [x] `EntityResolver` (`graph/builder.rs`): exact match + Levenshtein + cosine similarity merge
+- [x] `KnowledgeGraph` struct (`models.rs`): nodes/edges/adjacency HashMaps, version AtomicU64
+- [x] Graph construction flow: NER/LLM output → validate → resolve → upsert LanceDB → update petgraph
+- [x] BFS traversal (`graph/traversal.rs`): batched hops, min-weight pruning
+- [x] Dijkstra path finding (`graph/traversal.rs`)
+- [x] `Arc<RwLock<KnowledgeGraph>>` locking pattern (search read-lock, write lock)
+- [x] Tantivy BM25 index (`storage/tantivy.rs`): index chunks, commit batcher (500ms)
+- [x] Hybrid search: 3-channel parallel (`tokio::join!`), score fusion (0.6/0.3/0.1)
 - [ ] Topic-based pre-filter: LanceDB `array_has_any` predicate
-- [ ] Graph export: GraphML, JSON
+- [x] Graph export: JSON (GraphML deferred)
 - [ ] WAL writer (`wal/writer.rs`): append-only JSON log
 - [ ] Startup recovery (`wal/recovery.rs`): reload from LanceDB into petgraph
 
 ### Python API Deliverables
 
-- [ ] LLM entity/relation extractor (`llm/extractor.py`): ontology-guided, Pydantic schema
-- [ ] Contextual prefix generator (`llm/chunker.py`): GPT-4o-mini, 2-sentence prefix
-- [ ] Document summarizer: first 4000 tokens → 200-300 word summary
-- [ ] Ontology manager: load from PostgreSQL, JSON schema, `GET/PUT /ontology`
+- [x] LLM entity/relation extractor (`llm/extractor.py`): ontology-guided, Pydantic schema (config-gated)
+- [x] Contextual prefix generator (`llm/chunker.py`): 2-sentence prefix (config-gated, `ENABLE_CONTEXTUAL_PREFIX`)
+- [x] Document summarizer: first 4000 tokens → 200-300 word summary
+- [x] **NER pipeline** (`llm/ner_tagger.py`): spaCy `en_core_web_trf` + legal LLM labels (always-on)
+- [x] **Graph construction from NER** (`build_graph_from_ner.py`): batch graph build from ner_tags
+- [x] Ontology manager: JSON schema, `GET/PUT /ontology`
 - [ ] `POST /ontology/generate`: LLM-assisted bootstrap from sample docs
-- [ ] Graph routers: `GET /graph/nodes/{id}`, `GET /graph/path`, `GET /graph/subgraph`
-- [ ] `GET /graph/export?format=json|graphml`
-- [ ] `PUT /graph/nodes/{id}`, `POST /graph/edges`, `DELETE /graph/edges/{id}`
-- [ ] `GET /topics`, `GET /topics/{id}/nodes`
+- [x] Graph routers: `GET /graph/nodes/{id}`, `GET /graph/path`, `GET /graph/subgraph`
+- [x] `GET /graph/export?format=json`
+- [x] `PUT /graph/nodes/{id}`, `POST /graph/edges`, `DELETE /graph/edges/{id}`
+- [x] `GET /topics`, `GET /topics/{id}/nodes`
 - [ ] SSE progress stream (`GET /ingest/jobs/{id}/stream`)
-- [ ] WebSocket endpoint (`WS /ws`): job progress, graph update events
+- [x] WebSocket endpoint (`WS /ws`): job progress, graph update events
 - [ ] `user_feedback` table: record node edits and edge deletions
 
 ### Frontend Deliverables
 
-- [ ] Graph viewer page (`/graph/:collectionId`): `react-force-graph-2d`, node colors by type
-- [ ] Graph controls: depth slider (1-4), edge type filter chips, topic filter
-- [ ] `NodeDetailPanel`: MUI Drawer, entity properties, linked chunks, edit form
-- [ ] `PathFinder` mode: click two nodes → call `GET /graph/path` → highlight path
-- [ ] Ontology editor page (`/ontology/:collectionId`): entity type tree, relationship table
-- [ ] `TopicSidebar`: topic multi-select for search filtering
+- [x] Graph viewer page (`/graph/:collectionId`): `react-force-graph-2d`, node colors by canonical type
+- [x] Graph controls: depth slider (1-4), edge type filter chips, topic filter
+- [x] `NodeDetailPanel`: MUI Drawer, entity properties, linked chunks, edit form
+- [x] `PathFinder` mode: click two nodes → call `GET /graph/path` → highlight path
+- [x] Ontology editor page (`/ontology/:collectionId`): entity type tree, relationship table
+- [x] `TopicSidebar`: topic multi-select for search filtering
 - [ ] SSE progress bar in `IngestPanel` (replaces polling)
-- [ ] WebSocket middleware integration for real-time graph updates
-- [ ] Search mode selector: hybrid / vector / keyword / graph
+- [x] WebSocket middleware integration for real-time graph updates
+- [x] Search mode selector: hybrid / vector / keyword / graph
 - [ ] Result cards with BM25 highlights
 - [ ] Web Worker for graph layout computation (`graphLayout.worker.ts`)
+- [x] Node label toggle (LabelIcon/LabelOffIcon in graph toolbar)
 
 ### Phase 2 Acceptance Criteria
 
-1. After ingest, the graph viewer shows entity nodes and relationships with correct types
-2. User can click a node to see its details, linked source chunks, and 1-hop neighbors
-3. User can search with topics filter and see relevant filtered results
-4. User can edit an entity label and see the change reflected in the graph
-5. User can generate an ontology from sample docs and apply it
-6. Real-time progress bar updates during ingest (SSE)
+1. ✅ After ingest, the graph viewer shows entity nodes and relationships with correct types
+2. ✅ User can click a node to see its details, linked source chunks, and 1-hop neighbors
+3. ✅ User can search with topics filter and see relevant filtered results
+4. ✅ User can edit an entity label and see the change reflected in the graph
+5. ⬜ User can generate an ontology from sample docs and apply it
+6. ⬜ Real-time progress bar updates during ingest (SSE)
 
 ---
 

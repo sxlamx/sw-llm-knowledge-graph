@@ -5,6 +5,7 @@ import CircularProgress from '@mui/material/CircularProgress';
 import Typography from '@mui/material/Typography';
 import { useAppDispatch } from '../store';
 import { setCredentials } from '../store/authSlice';
+import { wsConnect } from '../store/wsMiddleware';
 import { useExchangeCodeMutation } from '../api/authApi';
 
 const REDIRECT_URI = `${window.location.origin}/auth/callback/google`;
@@ -39,6 +40,7 @@ export default function CallbackPage() {
       .unwrap()
       .then((result) => {
         dispatch(setCredentials({ accessToken: result.access_token, user: result.user }));
+        dispatch(wsConnect());
         navigate('/dashboard', { replace: true });
       })
       .catch((err) => {
