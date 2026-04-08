@@ -620,3 +620,331 @@ The following specification documents need updates to incorporate these features
 6. **Template factory is server-side** (Python), not client-side. Templates contain LLM prompts that should not be exposed to the frontend. The frontend only sees template metadata (name, description, domain, type).
 
 7. **Domain templates are authored from scratch** using Hyper-Extract's presets as reference for field choices and prompt design patterns, not copied verbatim. This avoids licensing concerns and ensures our templates fit our data model.
+
+8. **All LLM features use Ollama Cloud API**. Every LLM call — two-stage extraction, entity/edge merge, knowledge chat, node summaries, ontology generation, contextual prefix, document summaries — routes through the existing `settings.ollama_cloud_base_url` endpoint (OpenAI-compatible API). No local Ollama daemon, no external OpenAI API key. The `httpx.AsyncClient` pattern from `app/llm/extractor.py` is the canonical call pattern for all new LLM features.
+
+---
+
+## 7. Rust Feasibility Assessment
+
+### 7.1 Current Rust Capabilities vs. Feature Requirements
+
+| Feature | Can Rust Do It? | Should Rust Do It? | Recommendation |
+|---|---|---|---|
+| **F1: YAML template parsing** | Yes — `serde_yaml` can parse YAML into typed structs. Rust can validate schemas, resolve key patterns, and localize i18n strings. | **No.** Templates produce LLM prompts that must be consumed by Python-side LLM calls. Parsing in Rust would require duplicating the prompt-construction logic that lives in Python. The YAML → Pydantic → prompt pipeline is naturally Python. | **Python-side**. Rust is not needed here. |
+| **F2: Two-stage extraction** | Partial. Rust can chunk text and build `known_nodes` lists. But the two LLM calls (extract nodes, then extract edges) are inherently async HTTP calls to Ollama Cloud. | **No.** Two-stage extraction is two LLM calls with prompt construction. This is entirely Python. Rust's chunking is already used. | **Python-side**. Rust chunking (already done) + Python LLM orchestration. |
+| **F3: Entity/edge merging** | Rust already does exact + fuzzy (Levenshtein + cosine) resolution in `EntityResolver`. LLM-merge strategies require calling Ollama Cloud. | **Split.** Deterministic merge strategies (KEEP_FIRST, KEEP_LAST, FIELD_OVERWRITE) should be **Rust-side** for speed. LLM-based merge strategies must be **Python-side** (async HTTP call). | **Rust: deterministic merge. Python: LLM merge.** |
+| **F4: Incremental feeding** | Rust's `upsert_nodes`/`upsert_edges` already support adding to existing graphs. The `merge_into_collection` logic (conflict resolution) is the new part. | **Split.** The graph upsert and adjacency rebuild is already Rust. Merge-strategy dispatch should call Python for LLM strategies. | **Rust: graph mutation. Python: merge orchestration.** |
+| **F5: Knowledge chat** | Rust can do vector search over `nodes` and `edges` LanceDB tables (once `search_nodes`/`search_edges` are implemented). The final LLM Q&A call is Python. | **Split.** Rust handles the search/retrieval channel. Python handles the LLM chat synthesis. | **Rust: node/edge search. Python: LLM chat.** |
+| **F6: Temporal/spatial dimensions** | Rust stores `time`/`location` as edge fields. Rust can filter edges by time range or location. Rust can compute composite dedup keys with temporal/spatial components. | **Yes.** This is pure data modeling + storage + query filtering. No LLM calls needed in Rust. | **Rust-side.** Schema extension, LanceDB columns, key computation, query filters. |
+| **F7: Hyperedges** | Rust can store `participants: Vec<Uuid>` on `GraphEdge`. Rust can validate that all participants exist (dangling edge pruning). Rust can compute adjacency differently for hyperedges. | **Yes.** This is data modeling + graph structure. No LLM needed. | **Rust-side.** Schema extension, adjacency rebuild, dangling pruning. |
+| **F8: Domain templates** | No code component — these are YAML files. | **No.** Authoring YAML files is not a Rust concern. | **Python-side (templates). Rust: no change.** |
+| **F9: Extraction method registry** | The registry is a Python dict mapping method names to extractor classes. | **No.** This is Python-side plugin architecture. | **Python-side.** |
+| **F10: Structured identifiers & labels** | Rust can store `display_label` and `dedup_key` strings on `GraphNode`/`GraphEdge`. Rust can compute composite keys from a pattern string (e.g., `"{source}\|{predicate}\|{target}@{time}"`). | **Yes.** Key computation and storage are pure data operations. | **Rust-side.** Key computation, label storage, dedup by key. |
+
+### 7.2 Rust Implementation Plan — New Modules and Changes
+
+#### 7.2.1 Data Model Extensions (`rust-core/src/models.rs`)
+
+```rust
+// ADD to GraphEdge:
+pub predicate: String,           // NEW: explicit predicate string (was edge_type only)
+pub time: Option<String>,        // NEW: temporal attribute (F6)
+pub location: Option<String>,    // NEW: spatial attribute (F6)
+pub participants: Option<Vec<Uuid>>,  // NEW: hyperedge participants (F7)
+pub display_label: Option<String>,   // NEW: rendered label template (F10)
+pub dedup_key: Option<String>,       // NEW: computed dedup key (F10)
+pub doc_origins: Vec<Uuid>,          // NEW: multi-document provenance (F4)
+
+// ADD to GraphNode:
+pub display_label: Option<String>,   // NEW: rendered label template (F10)
+pub dedup_key: Option<String>,       // NEW: computed dedup key (F10)
+```
+
+**Migration**: `predicate` field added to `GraphEdge`. Existing code uses `edge_type` (enum). New code stores the raw predicate string (e.g., `"cited"`) in `predicate` and maps to `EdgeType::Custom(predicate)` for backward compatibility. LanceDB `edges` table gains `predicate`, `time`, `location`, `participants`, `display_label`, `dedup_key` columns.
+
+#### 7.2.2 New Module: `rust-core/src/graph/merge.rs` — Deterministic Merge Strategies
+
+```rust
+/// Deterministic merge strategies that Rust can handle without LLM calls.
+/// LLM-based strategies are dispatched to Python via PyO3 callback.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DeterministicMergeStrategy {
+    KeepFirst,       // Preserve existing, ignore incoming
+    KeepLast,        // Overwrite with incoming
+    FieldOverwrite,  // Non-null incoming fields overwrite null existing; lists append
+}
+
+/// Merge two nodes using a deterministic strategy.
+/// Returns the merged node (new allocation, does not mutate inputs).
+pub fn merge_nodes_deterministic(
+    existing: &GraphNode,
+    incoming: &GraphNode,
+    strategy: &DeterministicMergeStrategy,
+) -> GraphNode;
+
+/// Merge two edges using a deterministic strategy.
+pub fn merge_edges_deterministic(
+    existing: &GraphEdge,
+    incoming: &GraphEdge,
+    strategy: &DeterministicMergeStrategy,
+) -> GraphEdge;
+```
+
+**Key design**: Rust handles `KeepFirst`, `KeepLast`, `FieldOverwrite` synchronously (microsecond-level). When the template specifies an LLM strategy (`llm_balanced`, etc.), Python calls Rust for exact dedup first (to detect the conflict), then calls the Ollama Cloud LLM, then writes the merged result back via `upsert_nodes`/`upsert_edges`.
+
+#### 7.2.3 New Method: `merge_into_collection` on `IndexManager` (PyO3)
+
+```rust
+/// Incremental merge of new nodes/edges into an existing collection graph.
+/// Uses DeterministicMergeStrategy for conflict resolution.
+/// For LLM-based strategies, Python should call resolve_conflicts() first,
+/// then upsert the merged results.
+#[pymethods]
+impl IndexManager {
+    /// Detect conflicts between new and existing nodes.
+    /// Returns JSON: [{existing_id, incoming_id, dedup_key, field_diffs}]
+    fn detect_node_conflicts(
+        &self,
+        collection_id: &str,
+        new_nodes_json: &str,
+    ) -> PyResult<String>;
+
+    /// Detect conflicts between new and existing edges.
+    fn detect_edge_conflicts(
+        &self,
+        collection_id: &str,
+        new_edges_json: &str,
+    ) -> PyResult<String>;
+
+    /// Merge new nodes into collection using deterministic strategy.
+    fn merge_nodes_into_collection(
+        &self,
+        collection_id: &str,
+        new_nodes_json: &str,
+        strategy: &str,  // "keep_first" | "keep_last" | "field_overwrite"
+    ) -> PyResult<String>;  // Returns merge report JSON
+
+    /// Merge new edges into collection using deterministic strategy.
+    fn merge_edges_into_collection(
+        &self,
+        collection_id: &str,
+        new_edges_json: &str,
+        strategy: &str,
+    ) -> PyResult<String>;
+
+    /// Prune dangling edges (edges whose source/target/participants
+    /// don't exist in the node set).
+    fn prune_dangling_edges(
+        &self,
+        collection_id: &str,
+    ) -> PyResult<usize>;  // Returns count of pruned edges
+}
+```
+
+#### 7.2.4 New Method: `search_nodes` / `search_edges` on `IndexManager` (PyO3)
+
+```rust
+#[pymethods]
+impl IndexManager {
+    /// Vector similarity search over nodes table.
+    /// Returns JSON array of matching nodes with scores.
+    fn search_nodes(
+        &self,
+        collection_id: &str,
+        query_embedding_json: &str,
+        top_k: usize,
+    ) -> PyResult<String>;
+
+    /// Vector similarity search over edges table.
+    /// Returns JSON array of matching edges with scores.
+    fn search_edges(
+        &self,
+        collection_id: &str,
+        query_embedding_json: &str,
+        top_k: usize,
+        time_from: Option<&str>,    // F6: temporal filter
+        time_to: Option<&str>,      // F6: temporal filter
+        location: Option<&str>,     // F6: spatial filter
+    ) -> PyResult<String>;
+}
+```
+
+**Note**: These require embeddings stored in the `nodes` and `edges` LanceDB tables. Currently only `chunks` has embeddings. The Rust `IndexManager` will need to open `{collection_id}_nodes` and `{collection_id}_edges` LanceDB tables and perform ANN search. This is structurally identical to the existing chunk vector search done in Python via LanceDB.
+
+#### 7.2.5 Key Pattern Compiler (`rust-core/src/graph/keys.rs`)
+
+```rust
+/// Compile a template key pattern like "{source}|{predicate}|{target}@{time}"
+/// into a function that extracts the key from a GraphEdge.
+pub struct KeyCompiler;
+
+impl KeyCompiler {
+    /// Compile a key pattern for nodes.
+    /// Pattern uses field names from GraphNode as placeholders.
+    pub fn compile_node_key(pattern: &str) -> Result<Box<dyn Fn(&GraphNode) -> String>, String>;
+
+    /// Compile a key pattern for edges.
+    /// Supports: {source}, {target}, {predicate}, {time}, {location}, {participants}
+    pub fn compile_edge_key(pattern: &str) -> Result<Box<dyn Fn(&GraphEdge) -> String>, String>;
+
+    /// Compile an edge-to-participants extractor for hyperedge validation.
+    /// Returns a function that extracts all participant node IDs from an edge.
+    pub fn compile_participants_extractor(
+        source_field: Option<&str>,
+        target_field: Option<&str>,
+        participants_field: Option<&str>,
+    ) -> Result<Box<dyn Fn(&GraphEdge) -> Vec<Uuid>>, String>;
+}
+```
+
+**Implementation approach**: Parse the pattern string at compile time into a sequence of literal segments and field-name segments. At runtime, look up field values by name on the struct using a pre-built `HashMap<&str, Box<dyn Fn(&T) -> String>>` field accessor map. This avoids `format!` macro limitations and gives O(n) key rendering.
+
+#### 7.2.6 Dangling Edge Pruning for Hyperedges
+
+Existing `build_graph_edges()` only creates edges where source+target exist. For hyperedges, validation must check **all** participants:
+
+```rust
+/// Prune edges that reference non-existent nodes.
+/// For binary edges: checks source and target.
+/// For hyperedges: checks ALL participants.
+pub fn prune_dangling_edges(graph: &mut KnowledgeGraph) -> usize {
+    let valid_node_ids: HashSet<Uuid> = graph.nodes.keys().copied().collect();
+    let mut pruned = 0;
+
+    // Collect dangling edge IDs
+    let dangling: Vec<Uuid> = graph.edges.iter()
+        .filter(|(_, edge)| {
+            if let Some(participants) = &edge.participants {
+                // Hyperedge: ALL participants must exist
+                participants.iter().any(|p| !valid_node_ids.contains(p))
+            } else {
+                // Binary edge: source and target must exist
+                !valid_node_ids.contains(&edge.source) || !valid_node_ids.contains(&edge.target)
+            }
+        })
+        .map(|(id, _)| *id)
+        .collect();
+
+    // Remove dangling edges and rebuild adjacency
+    for id in &dangling {
+        graph.edges.remove(id);
+    }
+    pruned = dangling.len();
+
+    // Rebuild adjacency maps
+    graph.rebuild_adjacency();
+
+    pruned
+}
+```
+
+### 7.3 Python-Rust Integration Pattern
+
+The integration follows the established pattern: **Python orchestrates, Rust executes**.
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                        PYTHON                            │
+│                                                          │
+│  1. Load YAML template → TemplateConfig                 │
+│  2. Build LLM prompts from template                     │
+│  3. Call Ollama Cloud API:                               │
+│     - Stage 1: Extract entities (LLM)                    │
+│     - Stage 2: Extract relations with context (LLM)     │
+│     - LLM merge (if strategy requires it)                │
+│     - Knowledge chat Q&A (LLM)                           │
+│  4. Call Rust for data operations:                      │
+│     - detect_node_conflicts() → conflict report          │
+│     - merge_nodes_into_collection(strategy) → merge      │
+│     - upsert_nodes() / upsert_edges()                    │
+│     - prune_dangling_edges()                             │
+│     - search_nodes() / search_edges() → retrieval       │
+│     - compute dedup keys, render display labels          │
+│  5. Write to LanceDB (nodes, edges, chunks)             │
+│                                                          │
+└──────────────────────┬───────────────────────────────────┘
+                       │ PyO3 (in-process, no IPC)
+┌──────────────────────▼───────────────────────────────────┐
+│                        RUST                              │
+│                                                          │
+│  - GraphNode / GraphEdge with new fields                 │
+│  - DeterministicMergeStrategy (KeepFirst/Last/Overwrite) │
+│  - KeyCompiler: pattern → dedup key function             │
+│  - EntityResolver: exact + fuzzy resolution (existing)   │
+│  - KnowledgeGraph: nodes, edges, adjacency (existing)    │
+│  - prune_dangling_edges() for binary + hyperedges       │
+│  - search_nodes() / search_edges() via LanceDB ANN      │
+│  - WAL + batch writes (existing)                         │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+### 7.4 Ollama Cloud API Usage for All LLM Features
+
+All new LLM calls follow the existing pattern from `app/llm/extractor.py`:
+
+```python
+import httpx
+
+OLLAMA_CLOUD_URL = settings.ollama_cloud_base_url  # e.g., "https://api.ollama.com/v1"
+MODEL = settings.ollama_cloud_model                # e.g., "llama3.2"
+
+async def call_ollama_cloud(system_prompt: str, user_prompt: str, response_format: dict = None) -> dict:
+    """Generic Ollama Cloud API call (OpenAI-compatible)."""
+    payload = {
+        "model": MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.1,
+    }
+    if response_format:
+        payload["response_format"] = response_format
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.post(
+            f"{OLLAMA_CLOUD_URL}/chat/completions",
+            json=payload,
+            headers={"Authorization": f"Bearer {settings.ollama_cloud_api_key}"},
+        )
+        resp.raise_for_status()
+        return resp.json()
+```
+
+**LLM Call Points for Each Feature:**
+
+| Feature | LLM Call Purpose | Endpoint Called |
+|---|---|---|
+| F2: Two-stage extraction | 1st call: extract entities. 2nd call: extract relations with entity context. | `/chat/completions` |
+| F3: LLM merge | Send both entity versions + field schema → LLM synthesizes merged version. | `/chat/completions` with `response_format: {type: "json_object"}` |
+| F5: Knowledge chat | Search nodes/edges → format context → LLM generates answer. | `/chat/completions` |
+| F2: Edge prompt injection | `known_nodes` list injected into edge extraction prompt. | (part of Stage 2 call) |
+| F6: Temporal/spatial prompts | `observation_time` / `observation_location` injected into prompts. | (part of extraction call) |
+
+**Cost control**: All LLM calls go through `cost_tracker.create_tracker()` with per-job budget caps (existing mechanism from `app/services/cost_tracker.py`).
+
+### 7.5 Feature Implementation Matrix — Rust vs. Python Responsibility
+
+| Feature | Rust Responsibility | Python Responsibility |
+|---|---|---|
+| **F1: YAML templates** | None | Parse YAML, validate schemas, build prompt strings, TemplateGallery/Factory |
+| **F2: Two-stage extraction** | None (chunking already done) | Build node/edge prompts, call Ollama Cloud (2 calls), merge results |
+| **F3: Entity/edge merging** | `DeterministicMergeStrategy` (KeepFirst/Last/FieldOverwrite), conflict detection, key-based dedup | LLM-merge strategies (LLM_BALANCED, LLM_PREFER_FIRST/LAST), prompt construction, call Ollama Cloud |
+| **F4: Incremental feeding** | `merge_nodes_into_collection()`, `merge_edges_into_collection()`, `upsert_nodes/edges`, `prune_dangling_edges()` | Orchestrate feed pipeline, call Rust for merge, call Python/LLM for conflicts |
+| **F5: Knowledge chat** | `search_nodes()`, `search_edges()` (LanceDB ANN) | Format context, call Ollama Cloud Q&A, return answer + items |
+| **F6: Temporal/spatial** | Add `time`/`location` fields, compute composite dedup keys, filter edges by time/location range | Inject `observation_time`/`observation_location` into prompts |
+| **F7: Hyperedges** | Add `participants` field, `prune_dangling_edges()` with full-participant check, rebuild adjacency with hyperedges | Extract participants from LLM output, resolve participant names to UUIDs |
+| **F8: Domain templates** | None | Author YAML files, TemplateGallery loads them |
+| **F9: Extraction method registry** | None | Python protocol + dict registry |
+| **F10: Identifiers & labels** | `KeyCompiler` (pattern → key function), store `display_label`/`dedup_key` on nodes/edges | Render labels from template patterns in extraction pipeline, pass to Rust via `upsert_nodes/edges` |
+
+### 7.6 What Rust Cannot Do (and Why)
+
+| Capability | Why Not Rust | Workaround |
+|---|---|---|
+| Call Ollama Cloud API | Rust's async HTTP (reqwest) + TLS + JSON parsing adds significant dependency weight. The PyO3 bridge already provides clean Python async. The GIL is released during Rust compute, so Python async LLM calls don't block Rust. | Python makes all LLM calls. Rust handles data operations. |
+| Parse YAML template configs | `serde_yaml` can parse YAML, but template → prompt construction requires string templating, i18n resolution, and dynamic Pydantic model generation. These are naturally Python (Jinja2-like, Pydantic `create_model`). | Python parses templates. Rust receives the compiled results (schemas, keys, labels) as typed parameters. |
+| Generate dynamic Pydantic models | `create_model()` is a Python runtime feature. Rust has no equivalent for generating Python classes dynamically. | Python-side only. |
+| Run LLM-based merge logic | Requires calling Ollama Cloud and interpreting structured JSON output. The merge prompt must reference the template's field schema, which is Python-side. | Python-side. Rust detects the conflict and reports it; Python resolves via LLM; result is written back via Rust `upsert_*`. |
