@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc -c /private/tmp/claude-501/-Volumes-ExtremeSSD-github-sw-llm-knowledge-graph/tasks/bkbn7qq74.output)",
+      "Read(//Volumes/ExtremeSSD/github/sw-llm-knowledge-graph/python-api/**)"
+    ]
+  }
+}

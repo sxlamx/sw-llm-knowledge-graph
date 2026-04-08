@@ -33,6 +33,9 @@ dist/
 # Docker
 .dockerignore
 
+# References (local — not committed)
+references/
+
 # Data (local storage — not committed)
 data/
 .data/
