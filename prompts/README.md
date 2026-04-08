@@ -19,7 +19,9 @@ reviews, and tests the sw-llm-knowledge-graph system.
 
 ## Phases
 
-The system is built in 6 logical phases. Run all 3 bots per phase before starting the next.
+The system is built in 11 logical phases. Run all 3 bots per phase before starting the next.
+
+Phases 1-6 cover the base system. Phases 7-11 cover Hyper-Extract feature integration (spec 15).
 
 | Phase | Scope | Key Specs |
 |-------|-------|-----------|
@@ -29,6 +31,11 @@ The system is built in 6 logical phases. Run all 3 bots per phase before startin
 | [Phase 4 — Hybrid Search](./phase-4-hybrid-search/) | 3-channel search, score fusion, LRU cache, topic filter | 06, 03 |
 | [Phase 5 — Frontend](./phase-5-frontend/) | React 18, RTK Query, graph viewer, auth flow | 09, 08, 10 |
 | [Phase 6 — Hardening](./phase-6-hardening/) | Concurrency, atomic swap, rate limiting, metrics | 05, 11, 10 |
+| [Phase 7 — Templates & IDs](./phase-7-templates-ids/) | YAML templates, TemplateGallery, TemplateFactory, KeyCompiler, display labels, dedup keys | 15 (F1, F10) |
+| [Phase 8 — Two-Stage Extraction](./phase-8-two-stage-extraction/) | Two-stage LLM extraction, EdgePruner, Ollama Cloud client, dangling edge pruning | 15 (F2) |
+| [Phase 9 — Merge & Feed](./phase-9-merge-feed/) | Merge strategies (deterministic + LLM), conflict detection, incremental document feeding | 15 (F3, F4) |
+| [Phase 10 — Chat, Temporal, Hyper](./phase-10-chat-temporal-hyper/) | Knowledge chat, temporal/spatial graph dimensions, hyperedge support | 15 (F5, F6, F7) |
+| [Phase 11 — Domain & Methods](./phase-11-domain-methods/) | Domain template library (legal, finance, medical, industry), extraction method registry | 15 (F8, F9) |
 
 ---
 
@@ -64,6 +71,31 @@ phase-6-hardening/
   bot1-build.md      ← implement concurrency model, rate limits, metrics
   bot2-review.md     ← review for deadlock risk + security correctness
   bot3-test.md       ← write concurrency stress tests + security tests
+
+phase-7-templates-ids/
+  bot1-build.md      ← implement YAML templates, TemplateGallery, TemplateFactory, KeyCompiler
+  bot2-review.md     ← review template validation, key compilation, API security
+  bot3-test.md       ← write template parsing, key rendering, API endpoint tests
+
+phase-8-two-stage-extraction/
+  bot1-build.md      ← implement two-stage extraction, Ollama Cloud client, edge pruning
+  bot2-review.md     ← review LLM prompts, dangling edge pruning, backward compat
+  bot3-test.md       ← write two-stage extraction, edge pruning, Ollama client tests
+
+phase-9-merge-feed/
+  bot1-build.md      ← implement merge strategies (Rust + LLM), incremental feeding
+  bot2-review.md     ← review merge correctness, lock ordering, feed pipeline
+  bot3-test.md       ← write merge strategy, feed endpoint, Rust merge tests
+
+phase-10-chat-temporal-hyper/
+  bot1-build.md      ← implement knowledge chat, temporal/spatial templates, hyperedges
+  bot2-review.md     ← review chat service, temporal prompts, hyperedge adjacency
+  bot3-test.md       ← write knowledge chat, temporal extraction, hyperedge pruning tests
+
+phase-11-domain-methods/
+  bot1-build.md      ← author domain templates, extraction method registry, authoring guide
+  bot2-review.md     ← review template validity, method registry, domain quality
+  bot3-test.md       ← write template loading, registry, API endpoint tests
 ```
 
 ---
@@ -82,6 +114,11 @@ These rules apply to **all bots, all phases** (sourced from `tasks/LESSONS.md`):
 8. **Contextual prefix**: Gated behind `settings.enable_contextual_prefix` (default `False`).
 9. **Access token**: Persisted to `localStorage` key `kg_access_token` (not memory-only).
 10. **Dev token**: `dev_token_{user_id}` accepted ONLY when JWT PEM key files do not exist on disk.
+11. **LLM API**: All LLM calls use Ollama Cloud API via `call_ollama_cloud()` in `app/llm/ollama_client.py`. No direct `httpx` calls to Ollama elsewhere. No local Ollama daemon, no OpenAI SDK.
+12. **Templates are YAML on disk**: Parse with `yaml.safe_load()` (never `yaml.load`). Templates contain LLM prompts — never expose prompts through API responses.
+13. **Python orchestrates, Rust executes**: LLM calls are Python-side async. Deterministic data operations (merge, dedup, search, prune) are Rust-side. Never block the Rust event loop with LLM calls.
+14. **Canonical IDs are preserved**: During merge, the existing node's UUID is always kept. Never replace a canonical ID with an incoming ID.
+15. **Dangling edges are always pruned**: After extraction and after merge, prune edges whose source/target/participants don't exist in the node set.
 
 ---
 
@@ -105,3 +142,4 @@ All specs in `specifications/` directory:
 | 12-project-structure.md | Project Structure |
 | 13-development-roadmap.md | Development Roadmap |
 | 14-ner-pipeline.md | NER Pipeline |
+| 15-hyper-extract-integration.md | Hyper-Extract Feature Integration Plan |
