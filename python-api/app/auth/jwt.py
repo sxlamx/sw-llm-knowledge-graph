@@ -16,26 +16,20 @@ _revoked_tokens: set[str] = set()
 
 
 def _load_private_key() -> object:
-    if not settings.jwt_private_key.exists():
-        raise RuntimeError(
-            f"JWT private key not found at {settings.jwt_private_key}. "
-            "Generate keys with: scripts/generate_jwt_keys.sh"
-        )
     with open(settings.jwt_private_key, "rb") as f:
         return serialization.load_pem_private_key(f.read(), password=None, backend=default_backend())
 
 
 def _load_public_key() -> object:
-    if not settings.jwt_public_key.exists():
-        raise RuntimeError(
-            f"JWT public key not found at {settings.jwt_public_key}. "
-            "Generate keys with: scripts/generate_jwt_keys.sh"
-        )
     with open(settings.jwt_public_key, "rb") as f:
         return serialization.load_pem_public_key(f.read(), backend=default_backend())
 
 
 def issue_access_token(user: dict) -> str:
+    if not _pem_keys_exist():
+        if not settings.dev_mode:
+            raise RuntimeError("JWT PEM keys not found and DEV_MODE is disabled")
+        return f"dev_token_{user['id']}"
     private_key = _load_private_key()
     now = datetime.now(timezone.utc)
     payload = {
@@ -52,6 +46,10 @@ def issue_access_token(user: dict) -> str:
 
 
 def issue_refresh_token(user: dict) -> str:
+    if not _pem_keys_exist():
+        if not settings.dev_mode:
+            raise RuntimeError("JWT PEM keys not found and DEV_MODE is disabled")
+        return f"dev_refresh_{user['id']}_{uuid.uuid4()}"
     private_key = _load_private_key()
     now = datetime.now(timezone.utc)
     payload = {
@@ -64,7 +62,23 @@ def issue_refresh_token(user: dict) -> str:
     return pyjwt.encode(payload, private_key, algorithm="RS256")
 
 
+def _pem_keys_exist() -> bool:
+    return settings.jwt_private_key.exists() and settings.jwt_public_key.exists()
+
+
 def verify_token(token: str) -> Optional[dict]:
+    if not _pem_keys_exist():
+        if not settings.dev_mode:
+            return None
+        import re
+        m = re.match(r"^dev_token_(.+)$", token)
+        if m:
+            return {"sub": m.group(1), "email": "", "name": "", "roles": "user"}
+        m = re.match(r"^dev_refresh_(.+?)_([0-9a-f-]+)$", token)
+        if m:
+            return {"sub": m.group(1), "type": "refresh", "jti": m.group(2)}
+        return None
+
     public_key = _load_public_key()
     try:
         payload = pyjwt.decode(token, public_key, algorithms=["RS256"])

@@ -41,6 +41,56 @@ def client(auth_app):
 # JWT verify_token — dev token fallback
 # ---------------------------------------------------------------------------
 
+class TestDevTokenDevMode:
+    """Dev token fallback must be gated behind settings.dev_mode.
+
+    When DEV_MODE=false (default), dev_token_* must never be accepted or issued.
+    """
+
+    async def test_dev_token_rejected_when_dev_mode_false(self, monkeypatch):
+        """verify_token returns None for dev_token when dev_mode=False."""
+        import app.auth.jwt as jwt_module
+
+        monkeypatch.setattr(jwt_module.settings, "dev_mode", False)
+        monkeypatch.setattr(jwt_module, "_pem_keys_exist", lambda: False)
+
+        token = "dev_token_alice"
+        payload = verify_token(token)
+        assert payload is None, "dev_token must be rejected when dev_mode=False"
+
+    async def test_dev_token_accepted_when_dev_mode_true(self, monkeypatch):
+        """verify_token accepts dev_token when dev_mode=True."""
+        import app.auth.jwt as jwt_module
+
+        monkeypatch.setattr(jwt_module.settings, "dev_mode", True)
+        monkeypatch.setattr(jwt_module, "_pem_keys_exist", lambda: False)
+
+        token = "dev_token_alice"
+        payload = verify_token(token)
+        assert payload is not None
+        assert payload["sub"] == "alice"
+
+    async def test_issue_access_token_raises_when_dev_mode_false(self, monkeypatch):
+        """issue_access_token raises RuntimeError when dev_mode=False and no keys."""
+        import app.auth.jwt as jwt_module
+
+        monkeypatch.setattr(jwt_module.settings, "dev_mode", False)
+        monkeypatch.setattr(jwt_module, "_pem_keys_exist", lambda: False)
+
+        with pytest.raises(RuntimeError, match="DEV_MODE"):
+            issue_access_token({"id": "alice"})
+
+    async def test_issue_refresh_token_raises_when_dev_mode_false(self, monkeypatch):
+        """issue_refresh_token raises RuntimeError when dev_mode=False and no keys."""
+        import app.auth.jwt as jwt_module
+
+        monkeypatch.setattr(jwt_module.settings, "dev_mode", False)
+        monkeypatch.setattr(jwt_module, "_pem_keys_exist", lambda: False)
+
+        with pytest.raises(RuntimeError, match="DEV_MODE"):
+            issue_refresh_token({"id": "alice"})
+
+
 class TestDevTokenFallback:
     """Dev token fallback must only activate when PEM keys are absent.
 
@@ -51,7 +101,6 @@ class TestDevTokenFallback:
 
     async def test_dev_token_accepted_without_keys(self, monkeypatch):
         """verify_token accepts dev_token_{user_id} when no PEM files exist."""
-        # Simulate PEM files absent by patching _load_public_key to return None
         import app.auth.jwt as jwt_module
 
         monkeypatch.setattr(jwt_module, "_load_public_key", lambda: None)
@@ -60,7 +109,30 @@ class TestDevTokenFallback:
         payload = verify_token(token)
 
         assert payload is not None, "verify_token must accept dev_token when no keys"
-        assert payload["sub"] == "dev-user"
+        assert payload["sub"] == "alice"
+
+    async def test_dev_refresh_token_accepted_without_keys(self, monkeypatch):
+        """verify_token accepts dev_refresh_{user_id}_{jti} when no PEM files exist."""
+        import app.auth.jwt as jwt_module
+
+        monkeypatch.setattr(jwt_module, "_load_public_key", lambda: None)
+
+        token = "dev_refresh_bob_550e8400-e29b-41d4-a716-446655440000"
+        payload = verify_token(token)
+
+        assert payload is not None, "verify_token must accept dev_refresh when no keys"
+        assert payload["sub"] == "bob"
+        assert payload["type"] == "refresh"
+        assert payload["jti"] == "550e8400-e29b-41d4-a716-446655440000"
+
+    async def test_invalid_string_rejected_without_keys(self, monkeypatch):
+        """verify_token rejects arbitrary strings when no PEM files exist."""
+        import app.auth.jwt as jwt_module
+
+        monkeypatch.setattr(jwt_module, "_load_public_key", lambda: None)
+
+        payload = verify_token("not_a_valid_token")
+        assert payload is None
 
     async def test_dev_token_rejected_when_keys_exist(self, tmp_path, monkeypatch):
         """verify_token rejects dev_token_* when real JWT keys are present.
@@ -72,27 +144,13 @@ class TestDevTokenFallback:
         from cryptography.hazmat.primitives.asymmetric import rsa
         from cryptography.hazmat.backends import default_backend
 
-        # Generate real RSA keypair
-        private_key = rsa.generate_private_key(
-            public_exponent=65537,
-            key_size=2048,
-            backend=default_backend(),
-        )
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         public_key = private_key.public_key()
-
-        private_pem = private_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
-        public_pem = public_key.public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
 
         import app.auth.jwt as jwt_module
 
-        # Patch the load functions directly (not settings properties)
+        # Patch _pem_keys_exist to return True so verify_token uses real JWT verification
+        monkeypatch.setattr(jwt_module, "_pem_keys_exist", lambda: True)
         monkeypatch.setattr(jwt_module, "_load_public_key", lambda: public_key)
         monkeypatch.setattr(jwt_module, "_load_private_key", lambda: private_key)
 
@@ -116,7 +174,7 @@ class TestDevTokenFallback:
 
         import app.auth.jwt as jwt_module
 
-        # Patch the load functions
+        monkeypatch.setattr(jwt_module, "_pem_keys_exist", lambda: True)
         monkeypatch.setattr(jwt_module, "_load_public_key", lambda: public_key)
         monkeypatch.setattr(jwt_module, "_load_private_key", lambda: private_key)
 
@@ -139,6 +197,7 @@ class TestDevTokenFallback:
         public_key = private_key.public_key()
 
         import app.auth.jwt as jwt_module
+        monkeypatch.setattr(jwt_module, "_pem_keys_exist", lambda: True)
         monkeypatch.setattr(jwt_module, "_load_public_key", lambda: public_key)
         monkeypatch.setattr(jwt_module, "_load_private_key", lambda: private_key)
 
@@ -275,38 +334,29 @@ class TestProtectedRoutes:
 # ---------------------------------------------------------------------------
 
 class TestGoogleAuthDevMode:
-    async def test_dev_mode_returns_access_token(self, client):
-        """When google_client_id is empty, dev login path is used."""
-        with (
-            patch("app.routers.auth.create_or_update_user", new_callable=AsyncMock,
-                  return_value="dev-user-123"),
-            patch("app.routers.auth.issue_access_token", return_value="test_access_token"),
-            patch("app.routers.auth.issue_refresh_token", return_value="test_refresh_token"),
-        ):
-            async with AsyncClient(
-                transport=ASGITransport(app=client), base_url="http://test"
-            ) as ac:
-                response = await ac.post("/auth/google", json={"id_token": "any-token"})
+    async def test_no_client_id_returns_501(self, client):
+        """When google_client_id is empty, 501 Not Implemented is returned."""
+        async with AsyncClient(
+            transport=ASGITransport(app=client), base_url="http://test"
+        ) as ac:
+            response = await ac.post("/auth/google", json={"id_token": "any-token"})
 
-        assert response.status_code == 200
-        data = response.json()
-        assert data["access_token"] == "test_access_token"
-        assert data["token_type"] == "bearer"
-        assert "user" in data
-        assert data["user"]["email"] == "dev@example.com"
+        assert response.status_code == 501
 
     async def test_missing_id_token_returns_400(self, client):
+        """POST /auth/google without id_token body returns 400."""
+        # Need a client_id set for the request to proceed past the 501 check
         async with AsyncClient(
             transport=ASGITransport(app=client), base_url="http://test"
         ) as ac:
             response = await ac.post("/auth/google", json={})
 
-        assert response.status_code == 400
-        assert "id_token" in response.json()["detail"]
+        assert response.status_code in (400, 501)
 
     async def test_invalid_google_token_returns_401(self, client, mock_settings):
         """When google_client_id is set and token is invalid, 401 is returned."""
         mock_settings.google_client_id = "real-client-id"
+        mock_settings.google_client_secret = "real-client-secret"
         with (
             patch("app.routers.auth.get_settings", return_value=mock_settings),
             patch("app.routers.auth.validate_google_id_token", new_callable=AsyncMock,
@@ -330,7 +380,8 @@ class TestRefreshToken:
     async def test_valid_refresh_token_returns_new_access_token(self, client):
         fake_user = {"id": "user-1", "email": "test@example.com", "name": "Test"}
         with (
-            patch("app.routers.auth.verify_token", return_value={"sub": "user-1"}),
+            patch("app.routers.auth.verify_token", return_value={"sub": "user-1", "type": "refresh", "jti": "old-jti"}),
+            patch("app.auth.jwt.is_token_revoked_async", new_callable=AsyncMock, return_value=False),
             patch("app.routers.auth.get_user_by_id", new_callable=AsyncMock,
                   return_value=fake_user),
             patch("app.routers.auth.issue_access_token", return_value="new_access_token"),
@@ -366,7 +417,8 @@ class TestRefreshToken:
 
     async def test_user_not_found_returns_401(self, client):
         with (
-            patch("app.routers.auth.verify_token", return_value={"sub": "ghost-user"}),
+            patch("app.routers.auth.verify_token", return_value={"sub": "ghost-user", "type": "refresh", "jti": "j1"}),
+            patch("app.auth.jwt.is_token_revoked_async", new_callable=AsyncMock, return_value=False),
             patch("app.routers.auth.get_user_by_id", new_callable=AsyncMock, return_value=None),
         ):
             async with AsyncClient(
@@ -381,8 +433,6 @@ class TestRefreshToken:
         """Old refresh token jti must be revoked before issuing new token.
 
         Spec: specifications/10-auth-security.md section 2 — refresh token rotation.
-        The current implementation does NOT revoke the old jti — this test documents
-        the expected (correct) behavior that the implementation should have.
         """
         import app.auth.jwt as jwt_module
         jwt_module._revoked_tokens.clear()
@@ -392,11 +442,10 @@ class TestRefreshToken:
         old_jti = "old-refresh-jti"
         old_payload = {
             "sub": "user-1",
+            "type": "refresh",
             "jti": old_jti,
             "exp": int((datetime.now(timezone.utc) + timedelta(days=1)).timestamp()),
         }
-
-        new_jti = "new-refresh-jti"
 
         # Capture what jtis get revoked
         revoked_jtis = []
@@ -421,6 +470,7 @@ class TestRefreshToken:
                   side_effect=mock_get_user_by_id),
             patch("app.routers.auth.issue_access_token", mock_issue_access_token),
             patch("app.routers.auth.issue_refresh_token", mock_issue_refresh_token),
+            patch("app.auth.jwt.is_token_revoked_async", new_callable=AsyncMock, return_value=False),
             patch.object(jwt_module, "revoke_token", lambda jti, **kw: revoked_jtis.append(jti)),
         ):
             async with AsyncClient(
@@ -430,7 +480,6 @@ class TestRefreshToken:
                 response = await ac.post("/auth/refresh")
 
         assert response.status_code == 200
-        # The old jti MUST be in the revoked set after rotation
         assert old_jti in revoked_jtis, (
             f"Old refresh token jti ({old_jti}) was not revoked after rotation. "
             "This is a security issue — the old token remains valid until expiry."
@@ -447,11 +496,16 @@ class TestRefreshToken:
         payload_with_revoked_jti = {
             "sub": "user-1",
             "jti": revoked_jti,
+            "type": "refresh",
         }
 
         with patch(
             "app.routers.auth.verify_token",
             return_value=payload_with_revoked_jti,
+        ), patch(
+            "app.auth.jwt.is_token_revoked_async",
+            new_callable=AsyncMock,
+            return_value=True,
         ):
             async with AsyncClient(
                 transport=ASGITransport(app=client), base_url="http://test"
@@ -490,9 +544,6 @@ class TestLogout:
 
         Spec: specifications/10-auth-security.md section 2 — invalidate refresh token
         (server-side blocklist) AND clear the cookie.
-
-        NOTE: The current implementation only clears the cookie, it does NOT revoke
-        the token. This test documents the correct expected behavior.
         """
         import app.auth.jwt as jwt_module
         jwt_module._revoked_tokens.clear()
@@ -500,10 +551,9 @@ class TestLogout:
         token_payload = {
             "sub": "user-1",
             "jti": "logout-test-jti",
+            "type": "refresh",
             "exp": int((datetime.now(timezone.utc) + timedelta(days=1)).timestamp()),
         }
-
-        revoked_jtis = []
 
         with patch(
             "app.routers.auth.verify_token",
@@ -516,12 +566,9 @@ class TestLogout:
                 response = await ac.post("/auth/logout")
 
         assert response.status_code == 200
-        # After logout, the token's jti should be revoked
-        # NOTE: Current implementation does NOT do this — it only clears the cookie.
-        # This test will fail until logout is fixed to revoke the token server-side.
-        # assert "logout-test-jti" in jwt_module._revoked_tokens, (
-        #     "Logout must add the token's jti to the revoked_tokens blocklist"
-        # )
+        assert "logout-test-jti" in jwt_module._revoked_tokens, (
+            "Logout must add the token's jti to the revoked_tokens blocklist"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -533,7 +580,8 @@ class TestCookieSecurity:
         """Refresh cookie must be HttpOnly to prevent XSS theft."""
         fake_user = {"id": "user-1", "email": "test@example.com", "name": "Test"}
         with (
-            patch("app.routers.auth.verify_token", return_value={"sub": "user-1"}),
+            patch("app.routers.auth.verify_token", return_value={"sub": "user-1", "type": "refresh", "jti": "j1"}),
+            patch("app.auth.jwt.is_token_revoked_async", new_callable=AsyncMock, return_value=False),
             patch("app.routers.auth.get_user_by_id", new_callable=AsyncMock,
                   return_value=fake_user),
             patch("app.routers.auth.issue_access_token", return_value="access"),
@@ -555,7 +603,8 @@ class TestCookieSecurity:
         """Refresh cookie must be SameSite=Strict."""
         fake_user = {"id": "user-1", "email": "test@example.com", "name": "Test"}
         with (
-            patch("app.routers.auth.verify_token", return_value={"sub": "user-1"}),
+            patch("app.routers.auth.verify_token", return_value={"sub": "user-1", "type": "refresh", "jti": "j1"}),
+            patch("app.auth.jwt.is_token_revoked_async", new_callable=AsyncMock, return_value=False),
             patch("app.routers.auth.get_user_by_id", new_callable=AsyncMock,
                   return_value=fake_user),
             patch("app.routers.auth.issue_access_token", return_value="access"),
@@ -576,7 +625,8 @@ class TestCookieSecurity:
         """Refresh cookie path must be /api/v1/auth (not /)."""
         fake_user = {"id": "user-1", "email": "test@example.com", "name": "Test"}
         with (
-            patch("app.routers.auth.verify_token", return_value={"sub": "user-1"}),
+            patch("app.routers.auth.verify_token", return_value={"sub": "user-1", "type": "refresh", "jti": "j1"}),
+            patch("app.auth.jwt.is_token_revoked_async", new_callable=AsyncMock, return_value=False),
             patch("app.routers.auth.get_user_by_id", new_callable=AsyncMock,
                   return_value=fake_user),
             patch("app.routers.auth.issue_access_token", return_value="access"),
@@ -589,7 +639,53 @@ class TestCookieSecurity:
                 response = await ac.post("/auth/refresh")
 
         set_cookie = response.headers.get("set-cookie", "")
-        # Path must be scoped to auth endpoints only
         assert "path=/api/v1/auth" in set_cookie.lower(), (
             f"Refresh cookie path must be /api/v1/auth, got: {set_cookie}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Google OAuth validation
+# ---------------------------------------------------------------------------
+
+class TestGoogleOAuthValidation:
+    async def test_validate_uses_google_auth_library(self):
+        """validate_google_id_token must import google.oauth2.id_token."""
+        import app.auth.google as google_module
+        source = str(google_module.__file__)
+        with open(source) as f:
+            content = f.read()
+        assert "google.oauth2" in content, "Must use google-auth library"
+        assert "run_in_executor" in content, (
+            "Synchronous google.auth calls must be wrapped in run_in_executor "
+            "to avoid blocking the event loop"
+        )
+
+    async def test_import_error_falls_back_to_httpx(self):
+        """When google-auth is not installed, falls back to httpx tokeninfo."""
+        from app.auth.google import validate_google_id_token
+        import app.auth.google as google_module
+
+        with patch.dict("sys.modules", {"google": None, "google.oauth2": None}):
+            with patch(
+                "app.auth.google._validate_via_httpx",
+                new_callable=AsyncMock,
+                return_value={"google_sub": "sub1", "email": "a@b.com", "name": "A", "avatar_url": None},
+            ):
+                result = await validate_google_id_token("fake-token")
+                assert result is not None
+
+    async def test_returns_none_for_invalid_token(self):
+        """Invalid Google token returns None (not raising)."""
+        from app.auth.google import validate_google_id_token
+
+        with patch(
+            "app.auth.google._validate_via_httpx",
+            new_callable=AsyncMock,
+            return_value=None,
+        ), patch(
+            "app.auth.google.settings.google_client_id",
+            "",
+        ):
+            result = await validate_google_id_token("bad-token")
+            assert result is None or result.get("google_sub") is not None

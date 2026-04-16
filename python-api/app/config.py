@@ -60,9 +60,12 @@ class Settings(BaseSettings):
     # Phase 2 features (disabled by default in Phase 1)
     enable_contextual_prefix: bool = False
 
+    dev_mode: bool = False
+
     # Rate limiting
     rate_limit_per_user: int = 60
     rate_limit_window_seconds: int = 60
+    redis_url: str = ""                          # Set to enable Redis-backed rate limiting
 
     # Multimodal (vision captions for PDF images)
     vision_model: str = "gpt-4o-mini"          # OpenAI vision model for image captions
