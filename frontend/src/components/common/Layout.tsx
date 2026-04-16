@@ -11,6 +11,7 @@ import {
   Snackbar,
   Alert,
 } from '@mui/material';
+import useMediaQuery from '@mui/material/useMediaQuery';
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import SearchIcon from '@mui/icons-material/Search';
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
@@ -35,13 +36,15 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const location = useLocation();
   const drawerOpen = useAppSelector((s) => s.ui.drawerOpen);
   const snackbar = useAppSelector((s) => s.ui.snackbar);
+  const isMobile = useMediaQuery('(max-width:768px)');
 
   return (
     <Box sx={{ display: 'flex' }}>
       <NavBar />
 
       <Drawer
-        open={drawerOpen}
+        variant={isMobile ? 'temporary' : 'permanent'}
+        open={isMobile ? drawerOpen : true}
         onClose={() => dispatch(setDrawerOpen(false))}
         sx={{ '& .MuiDrawer-paper': { width: DRAWER_WIDTH } }}
       >

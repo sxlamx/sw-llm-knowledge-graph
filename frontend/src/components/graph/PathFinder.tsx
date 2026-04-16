@@ -39,7 +39,7 @@ const PathFinder: React.FC<Props> = ({ collectionId, onPathHighlight }) => {
         px: 2,
         py: 1,
         boxShadow: 3,
-        minWidth: 320,
+        minWidth: { xs: '90vw', sm: 320 },
       }}
     >
       <Stack direction="row" alignItems="center" spacing={1}>

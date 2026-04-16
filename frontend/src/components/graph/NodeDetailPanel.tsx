@@ -143,7 +143,7 @@ const NodeDetailPanel: React.FC<Props> = ({ node, collectionId, onClose }) => {
 
   return (
     <Drawer anchor="right" open onClose={onClose} sx={{ zIndex: 1300 }}>
-      <Box sx={{ p: 2, width: 380 }}>
+      <Box sx={{ p: 2, width: { xs: '100vw', sm: 380 } }}>
         <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1}>
           {isEditing ? (
             <TextField
