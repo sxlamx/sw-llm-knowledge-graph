@@ -62,6 +62,8 @@ class Settings(BaseSettings):
 
     dev_mode: bool = False
 
+    first_user_admin: bool = True
+
     # Rate limiting
     rate_limit_per_user: int = 60
     rate_limit_window_seconds: int = 60
