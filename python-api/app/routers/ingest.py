@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from app.auth.middleware import get_current_user
-from app.core.path_sanitizer import validate_folder_path
+from app.core.path_sanitizer import validate_folder_path, validate_file_path
 from app.db.lancedb_client import (
     create_ingest_job, get_ingest_job, update_ingest_job,
     list_ingest_jobs, get_collection,
@@ -11,7 +11,9 @@ from app.db.lancedb_client import (
 from app.pipeline.job_manager import get_job_manager
 from app.models.schemas import (
     IngestFolderRequest, IngestJobResponse, IngestJobListResponse,
+    FeedDocumentsRequest,
 )
+from app.services.template_gallery import TemplateGallery
 import json
 import logging
 import uuid
@@ -39,6 +41,16 @@ async def start_ingest_job(
     safe_path = validate_folder_path(body.folder_path)
     body = body.model_copy(update={"folder_path": str(safe_path)})
 
+    # Resolve template name to TemplateConfig if provided
+    if body.options.template:
+        gallery = TemplateGallery.get_instance()
+        template_config = gallery.get(body.options.template)
+        if not template_config:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Template '{body.options.template}' not found",
+            )
+
     job_id = str(uuid.uuid4())
     job_data = {
         "id": job_id,
@@ -60,6 +72,62 @@ async def start_ingest_job(
         "status": "pending",
         "collection_id": body.collection_id,
         "created_at": job_data["created_at"],
+        "stream_url": f"/api/v1/ingest/jobs/{job_id}/stream",
+    }
+
+
+@router.post("/collections/{collection_id}/feed", status_code=202)
+async def feed_documents(
+    collection_id: str,
+    body: FeedDocumentsRequest,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+):
+    """Add new documents to an existing collection's graph (incremental merge)."""
+    collection = await get_collection(collection_id)
+    if not collection:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    if collection.get("user_id") != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    for fp in body.file_paths:
+        try:
+            validate_file_path(fp)
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"Invalid file_path: {fp}")
+
+    if body.template:
+        gallery = TemplateGallery.get_instance()
+        template_config = gallery.get(body.template)
+        if not template_config:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Template '{body.template}' not found",
+            )
+
+    job_id = str(uuid.uuid4())
+    job_data = {
+        "id": job_id,
+        "collection_id": collection_id,
+        "status": "pending",
+        "progress": 0.0,
+        "total_docs": len(body.file_paths),
+        "processed_docs": 0,
+        "error_msg": "",
+        "options": json.dumps({"feed_mode": True, "template": body.template}),
+    }
+    await create_ingest_job(job_data)
+
+    from app.pipeline.ingest_worker import run_feed_pipeline
+    background_tasks.add_task(
+        run_feed_pipeline,
+        job_id, collection_id, body.file_paths, body.template,
+    )
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "collection_id": collection_id,
         "stream_url": f"/api/v1/ingest/jobs/{job_id}/stream",
     }
 
@@ -133,7 +201,7 @@ async def stream_job_progress(job_id: str, current_user: dict = Depends(get_curr
         async def on_event(event: dict):
             await queue.put(event)
 
-        jm.subscribe(job_id, on_event)
+        await jm.subscribe(job_id, on_event)
 
         try:
             while True:
@@ -144,7 +212,7 @@ async def stream_job_progress(job_id: str, current_user: dict = Depends(get_curr
         except asyncio.TimeoutError:
             yield {"event": "ping", "data": "{}"}
         finally:
-            jm.unsubscribe(job_id, on_event)
+            await jm.unsubscribe(job_id, on_event)
 
     return StreamingResponse(
         event_generator(),
@@ -155,10 +223,6 @@ async def stream_job_progress(job_id: str, current_user: dict = Depends(get_curr
             "X-Accel-Buffering": "no",
         },
     )
-
-
-# In-memory NER job state
-_ner_jobs: dict[str, dict] = {}
 
 
 @router.post("/collections/{collection_id}/ner", status_code=202)
@@ -179,18 +243,32 @@ async def trigger_ner_pass(
 
     job_id = str(uuid.uuid4())
 
+    await create_ingest_job({
+        "id": job_id,
+        "collection_id": collection_id,
+        "status": "ner_running",
+        "progress": 0.0,
+        "total_docs": 0,
+        "processed_docs": 0,
+        "error_msg": "",
+        "options": json.dumps({"ner_pass": True}),
+    })
+
     async def _run():
         from app.pipeline.ingest_worker import _run_ner_pass
-        _ner_jobs[job_id] = {"status": "running"}
         try:
+            await update_ingest_job(job_id, {"status": "ner_running"})
             await _run_ner_pass(collection_id, job_id)
-            _ner_jobs[job_id]["status"] = "completed"
+            await update_ingest_job(job_id, {"status": "ner_completed"})
         except Exception as e:
             logger.error(f"NER pass {job_id} failed: {e}")
-            _ner_jobs[job_id] = {"status": "failed", "error": str(e)}
+            await update_ingest_job(job_id, {"status": "ner_failed", "error_msg": str(e)})
 
     asyncio.create_task(_run())
     return {"job_id": job_id, "collection_id": collection_id, "status": "started"}
+
+
+_NER_STATUSES = {"ner_running", "ner_completed", "ner_failed"}
 
 
 @router.get("/collections/{collection_id}/ner/{job_id}")
@@ -200,7 +278,7 @@ async def get_ner_job_status(
     current_user: dict = Depends(get_current_user),
 ):
     """Poll the status of a NER pass job."""
-    job = _ner_jobs.get(job_id)
-    if not job:
+    job = await get_ingest_job(job_id)
+    if not job or job.get("status") not in _NER_STATUSES:
         raise HTTPException(status_code=404, detail="NER job not found")
-    return {"job_id": job_id, "collection_id": collection_id, **job}
+    return {"job_id": job_id, "collection_id": collection_id, "status": job["status"]}

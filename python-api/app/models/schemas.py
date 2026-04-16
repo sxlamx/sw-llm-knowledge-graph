@@ -1,8 +1,9 @@
 """Pydantic request/response schemas."""
 
+import re
 from datetime import datetime
-from typing import Optional, Any
-from pydantic import BaseModel, Field
+from typing import Optional, Any, Literal
+from pydantic import BaseModel, Field, field_validator
 from uuid import UUID
 
 
@@ -36,6 +37,13 @@ class CollectionCreate(BaseModel):
     description: Optional[str] = None
     folder_path: Optional[str] = None
 
+    @field_validator("name")
+    @classmethod
+    def name_must_not_contain_html(cls, v: str) -> str:
+        if re.search(r'[<>&"\']', v):
+            raise ValueError("Collection name contains disallowed characters")
+        return v
+
 
 class CollectionResponse(BaseModel):
     id: str
@@ -60,12 +68,25 @@ class IngestOptions(BaseModel):
     chunk_size_tokens: int = 512
     chunk_overlap_tokens: int = 50
     extract_entities: bool = True
+    template: Optional[str] = None
 
 
 class IngestFolderRequest(BaseModel):
     collection_id: str
     folder_path: str
     options: IngestOptions = Field(default_factory=IngestOptions)
+
+
+class FeedDocumentsRequest(BaseModel):
+    file_paths: list[str]
+    template: Optional[str] = None
+
+    @field_validator("file_paths")
+    @classmethod
+    def file_paths_must_be_non_empty(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("file_paths must not be empty")
+        return v
 
 
 class IngestJobResponse(BaseModel):
@@ -89,12 +110,12 @@ class IngestJobListResponse(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str
-    collection_ids: list[str] = Field(default_factory=list)
+    collection_ids: list[str] = Field(default_factory=list, max_length=10)
     topics: list[str] = Field(default_factory=list)
     depth: int = 2
     limit: int = 20
     offset: int = 0
-    mode: str = "hybrid"
+    mode: Literal["hybrid", "vector", "keyword", "graph"] = "hybrid"
     weights: dict = Field(default_factory=lambda: {"vector": 0.6, "keyword": 0.3, "graph": 0.1})
     timeout_ms: int = 800
 
@@ -184,6 +205,11 @@ class GraphEdgeResponse(BaseModel):
     weight: float = 1.0
     properties: dict = Field(default_factory=dict)
     collection_id: Optional[str] = None
+    predicate: str = ""
+    time: Optional[str] = None
+    location: Optional[str] = None
+    participants: Optional[list[str]] = None
+    doc_origins: Optional[list[str]] = None
 
 
 class GraphDataResponse(BaseModel):
@@ -245,6 +271,12 @@ class UpdateOntologyRequest(BaseModel):
 
 class GenerateOntologyRequest(BaseModel):
     collection_id: str
+
+
+class OntologyGenerateResponse(BaseModel):
+    proposal: OntologyResponse
+    applied: bool = False
+    message: str = "Review the proposal and call PUT /ontology to apply"
 
 
 # ---------------------------------------------------------------------------

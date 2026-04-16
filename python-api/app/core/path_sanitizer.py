@@ -66,6 +66,46 @@ def validate_folder_path(folder_path: str) -> Path:
     return canonical
 
 
+def validate_file_path(file_path: str) -> Path:
+    """
+    Validate that a file path is:
+    1. An absolute path.
+    2. Within one of ALLOWED_FOLDER_ROOTS.
+
+    Does NOT require the path to exist on the filesystem (the feed
+    pipeline may reference files before they're staged).
+
+    Raises HTTPException(400/403) on any violation.
+    Returns the resolved canonical Path on success.
+    """
+    try:
+        requested = Path(file_path)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Invalid path: {file_path!r}")
+
+    if not requested.is_absolute():
+        raise HTTPException(status_code=400, detail="file_path must be an absolute path")
+
+    try:
+        canonical = requested.resolve()
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"Cannot resolve path: {exc}")
+
+    allowed_roots = [Path(r).resolve() for r in settings.allowed_folder_roots_list]
+    if not any(
+        _path_is_within(canonical, root) for root in allowed_roots
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Path {canonical!r} is not within any allowed root. "
+                f"Allowed roots: {[str(r) for r in allowed_roots]}"
+            ),
+        )
+
+    return canonical
+
+
 def validate_file_extension(file_path: str) -> None:
     """
     Raise HTTPException(400) if the file extension is in the blocked list.
