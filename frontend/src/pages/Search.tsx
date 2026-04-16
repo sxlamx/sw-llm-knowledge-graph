@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useCallback, useState, useRef } from 'react';
 import {
   Box,
   Grid,
@@ -16,6 +16,9 @@ import { setSelectedCollections } from '../store/slices/searchSlice';
 import SearchBar from '../components/search/SearchBar';
 import SearchResults from '../components/search/SearchResults';
 import TopicSidebar from '../components/search/TopicSidebar';
+import { Alert, Box as MuiBox } from '@mui/material';
+
+const PAGE_SIZE = 50;
 
 const Search: React.FC = () => {
   const dispatch = useAppDispatch();
@@ -24,20 +27,61 @@ const Search: React.FC = () => {
 
   const { data: collectionsData } = useListCollectionsQuery();
   const [doSearch, { data: searchData, isLoading }] = useSearchMutation();
+  const [allResults, setAllResults] = useState<import('../types/api').SearchResult[]>([]);
+  const [offset, setOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Run search whenever query changes
-  useEffect(() => {
+  const doSearchCb = useCallback(() => {
     if (!query.trim()) return;
     doSearch({
       query,
       collection_ids: selectedCollectionIds.length > 0 ? selectedCollectionIds : [],
       topics: selectedTopics.length > 0 ? selectedTopics : undefined,
-      mode: (mode === 'graph' ? 'hybrid' : mode) as 'vector' | 'hybrid' | 'keyword' | undefined,
+      mode: mode as 'vector' | 'hybrid' | 'keyword' | 'graph' | undefined,
       weights: weights as unknown as Record<string, number>,
-      limit: 50,
+      limit: PAGE_SIZE,
       offset: 0,
     });
-  }, [query, mode, weights, selectedTopics, selectedCollectionIds]); // eslint-disable-line react-hooks/exhaustive-deps
+    setOffset(0);
+    setAllResults([]);
+  }, [query, mode, weights, selectedTopics, selectedCollectionIds, doSearch]);
+
+  useEffect(() => {
+    if (!query.trim()) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      doSearchCb();
+    }, 300);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [query, mode, weights, selectedTopics, selectedCollectionIds]);
+
+  useEffect(() => {
+    if (searchData?.results) {
+      if (offset === 0) {
+        setAllResults(searchData.results);
+      } else {
+        setAllResults((prev) => [...prev, ...searchData.results]);
+      }
+      setHasMore(searchData.results.length >= PAGE_SIZE);
+    }
+  }, [searchData, offset]);
+
+  const handleLoadMore = useCallback(() => {
+    const nextOffset = offset + PAGE_SIZE;
+    setOffset(nextOffset);
+    doSearch({
+      query,
+      collection_ids: selectedCollectionIds.length > 0 ? selectedCollectionIds : [],
+      topics: selectedTopics.length > 0 ? selectedTopics : undefined,
+      mode: mode as 'vector' | 'hybrid' | 'keyword' | 'graph' | undefined,
+      weights: weights as unknown as Record<string, number>,
+      limit: PAGE_SIZE,
+      offset: nextOffset,
+    });
+  }, [offset, query, mode, weights, selectedTopics, selectedCollectionIds, doSearch]);
 
   return (
     <Box>
@@ -49,6 +93,14 @@ const Search: React.FC = () => {
         <Box mb={2}>
           <SearchBar />
         </Box>
+
+        {mode === 'graph' && (
+          <MuiBox mb={1}>
+            <Alert severity="info" variant="outlined" icon={false}>
+              Graph mode uses hybrid search with emphasis on graph proximity.
+            </Alert>
+          </MuiBox>
+        )}
 
         <FormControl size="small" sx={{ minWidth: 240 }}>
           <InputLabel>Collection</InputLabel>
@@ -72,7 +124,7 @@ const Search: React.FC = () => {
       <Grid container spacing={2}>
         <Grid item xs={12} md={3}>
           <Paper sx={{ p: 2 }}>
-            <TopicSidebar />
+            <TopicSidebar collectionId={selectedCollectionIds[0] ?? activeCollectionId} />
           </Paper>
         </Grid>
 
@@ -85,9 +137,11 @@ const Search: React.FC = () => {
             </Box>
           ) : (
             <SearchResults
-              results={searchData?.results ?? []}
+              results={allResults}
               loading={isLoading}
               latencyMs={searchData?.latency_ms}
+              hasMore={hasMore}
+              onLoadMore={handleLoadMore}
             />
           )}
         </Grid>

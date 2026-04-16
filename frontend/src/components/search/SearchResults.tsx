@@ -1,6 +1,6 @@
 import React from 'react';
 import { FixedSizeList as List } from 'react-window';
-import { Box, Typography, CircularProgress } from '@mui/material';
+import { Box, Typography, CircularProgress, Button, Stack } from '@mui/material';
 import ResultCard from './ResultCard';
 import { SearchResultItem } from '../../api/searchApi';
 
@@ -8,11 +8,13 @@ interface Props {
   results: SearchResultItem[];
   loading?: boolean;
   latencyMs?: number;
+  hasMore?: boolean;
+  onLoadMore?: () => void;
 }
 
 const ITEM_HEIGHT = 148;
 
-const SearchResults: React.FC<Props> = ({ results, loading, latencyMs }) => {
+const SearchResults: React.FC<Props> = ({ results, loading, latencyMs, hasMore, onLoadMore }) => {
   if (loading) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
@@ -51,6 +53,14 @@ const SearchResults: React.FC<Props> = ({ results, loading, latencyMs }) => {
         </List>
       ) : (
         results.map((r) => <ResultCard key={r.chunk_id} result={r} />)
+      )}
+
+      {hasMore && onLoadMore && (
+        <Stack alignItems="center" sx={{ py: 2 }}>
+          <Button variant="outlined" onClick={onLoadMore} disabled={loading}>
+            {loading ? 'Loading…' : 'Load more'}
+          </Button>
+        </Stack>
       )}
     </Box>
   );
