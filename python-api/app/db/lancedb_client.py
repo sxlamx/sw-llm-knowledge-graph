@@ -22,8 +22,11 @@ def _safe_id(value: str) -> str:
     """Sanitize a UUID/string value for use in LanceDB WHERE clauses.
     
     Only allows alphanumeric characters, hyphens, and underscores.
+    Rejects empty strings.
     Raises ValueError if invalid characters found.
     """
+    if not value:
+        raise ValueError("ID must not be empty")
     if not re.match(r'^[a-zA-Z0-9_-]+$', value):
         raise ValueError(f"Invalid ID format: {value}")
     return value
@@ -31,7 +34,7 @@ def _safe_id(value: str) -> str:
 
 def _safe_str(value: str) -> str:
     """Escape a string value for use in LanceDB WHERE clauses."""
-    return value.replace('\\', '\\\\').replace('"', '\\"')
+    return value.replace('\\', '\\\\').replace('"', '\\"').replace("'", "\\'")
 
 
 async def get_lancedb() -> lancedb.DBConnection:
@@ -77,6 +80,13 @@ _SYSTEM_SCHEMAS: dict[str, pa.Schema] = {
         pa.field("access_token", _STR), pa.field("expiry_ms", _I64),
         pa.field("created_at", _I64),
     ]),
+    "user_feedback": pa.schema([
+        pa.field("id", _STR), pa.field("collection_id", _STR),
+        pa.field("user_id", _STR), pa.field("entity_type", _STR),
+        pa.field("target_id", _STR), pa.field("action", _STR),
+        pa.field("before", _STR), pa.field("after", _STR),
+        pa.field("created_at", _I64),
+    ]),
 }
 
 
@@ -113,8 +123,18 @@ async def upsert_to_table(
         return len(records)
 
     for rec in records:
+        pkey_val = rec.get(pkey, "")
+        safe_pkey = _safe_id(str(pkey_val)) if pkey_val else ""
         try:
-            tbl.update([f"={pkey}"], [rec])
+            existing = (
+                tbl.search()
+                .where(f'{pkey} = "{safe_pkey}"', prefilter=True)
+                .limit(1)
+                .to_list()
+            )
+            if existing:
+                tbl.delete(f'{pkey} = "{safe_pkey}"')
+            tbl.add([rec])
         except Exception:
             pass
 
@@ -254,21 +274,31 @@ async def create_collection(collection_data: dict) -> str:
 
 async def update_collection(collection_id: str, updates: dict) -> None:
     db = await get_lancedb()
-    updates["updated_at"] = int(datetime.utcnow().timestamp() * 1_000_000)
     try:
         tbl = db.open_table("collections")
-        tbl.update([f'=id'], [updates])
-    except Exception:
-        pass
+        safe_id = _safe_id(collection_id)
+        existing = tbl.search().where(f'id = "{safe_id}"', prefilter=True).limit(1).to_list()
+        if existing:
+            merged = {**existing[0], **updates}
+            tbl.delete(f'id = "{safe_id}"')
+            tbl.add([merged])
+    except Exception as e:
+        logger.warning(f"update_collection failed: {e}")
 
 
 async def delete_collection(collection_id: str) -> None:
     db = await get_lancedb()
+    safe_id = _safe_id(collection_id)
     try:
         tbl = db.open_table("collections")
-        tbl.delete(f'id = "{collection_id}"')
-    except Exception:
+        tbl.delete(f'id = "{safe_id}"')
+    except (ValueError, Exception):
         pass
+    for suffix in ("_chunks", "_nodes", "_edges", "_documents", "_topics", "_node_summaries"):
+        try:
+            db.drop_table(f"{collection_id}{suffix}")
+        except Exception:
+            pass
 
 
 async def list_collections(user_id: str) -> list[dict]:
@@ -304,9 +334,14 @@ async def update_ingest_job(job_id: str, updates: dict) -> None:
     db = await get_lancedb()
     try:
         tbl = db.open_table("ingest_jobs")
-        tbl.update([f'=id'], [updates])
-    except Exception:
-        pass
+        safe_id = _safe_id(job_id)
+        existing = tbl.search().where(f'id = "{safe_id}"', prefilter=True).limit(1).to_list()
+        if existing:
+            merged = {**existing[0], **updates}
+            tbl.delete(f'id = "{safe_id}"')
+            tbl.add([merged])
+    except Exception as e:
+        logger.warning(f"update_ingest_job failed: {e}")
 
 
 async def get_ingest_job(job_id: str) -> Optional[dict]:
@@ -640,17 +675,23 @@ async def vector_search(
     limit: int = 20,
     topics: Optional[list[str]] = None,
 ) -> list[dict]:
-    """ANN vector search against the collection's chunk table."""
+    """ANN vector search against the collection's chunk table.
+
+    If *topics* is non-empty, a LanceDB pre-filter is applied using
+    ``array_has_any(topics, ARRAY[...])``  so only chunks whose topic
+    list overlaps the request are returned.
+    """
     db = await get_lancedb()
     try:
         tbl = db.open_table(f"{collection_id}_chunks")
         q = tbl.search(embedding, vector_column_name="embedding").limit(limit)
+        if topics:
+            escaped = ", ".join(f"'{t.replace(chr(39), chr(39)+chr(39))}'" for t in topics)
+            q = q.where(f"array_has_any(topics, ARRAY[{escaped}])", prefilter=True)
         results = q.to_list()
-        # Attach score field name normalisation
         normalised = []
         for r in results:
             score = r.get("_distance", r.get("score", 0.0))
-            # Convert distance to similarity (cosine distance → cosine sim)
             normalised.append({**r, "vector_score": max(0.0, 1.0 - float(score))})
         return normalised
     except Exception:
@@ -732,10 +773,11 @@ async def list_graph_nodes(collection_id: str) -> list[dict]:
 async def get_graph_node(collection_id: str, node_id: str) -> Optional[dict]:
     db = await get_lancedb()
     try:
+        safe_node_id = _safe_id(node_id)
         tbl = db.open_table(f"{collection_id}_nodes")
-        result = tbl.search().where(f'id = "{node_id}"', prefilter=True).limit(1).to_list()
+        result = tbl.search().where(f'id = "{safe_node_id}"', prefilter=True).limit(1).to_list()
         return result[0] if result else None
-    except Exception:
+    except (ValueError, Exception):
         return None
 
 
@@ -787,19 +829,21 @@ async def list_graph_edges(collection_id: str) -> list[dict]:
 async def get_graph_edge(collection_id: str, edge_id: str) -> Optional[dict]:
     db = await get_lancedb()
     try:
+        safe_edge_id = _safe_id(edge_id)
         tbl = db.open_table(f"{collection_id}_edges")
-        result = tbl.search().where(f'id = "{edge_id}"', prefilter=True).limit(1).to_list()
+        result = tbl.search().where(f'id = "{safe_edge_id}"', prefilter=True).limit(1).to_list()
         return result[0] if result else None
-    except Exception:
+    except (ValueError, Exception):
         return None
 
 
 async def delete_graph_edge(collection_id: str, edge_id: str) -> None:
     db = await get_lancedb()
     try:
+        safe_edge_id = _safe_id(edge_id)
         tbl = db.open_table(f"{collection_id}_edges")
-        tbl.delete(f'id = "{edge_id}"')
-    except Exception:
+        tbl.delete(f'id = "{safe_edge_id}"')
+    except (ValueError, Exception):
         pass
 
 
@@ -811,10 +855,25 @@ async def get_ontology(collection_id: str) -> Optional[dict]:
     db = await get_lancedb()
     try:
         tbl = db.open_table("ontologies")
-        result = tbl.search().where(f'collection_id = "{collection_id}"', prefilter=True).limit(1).to_list()
-        return result[0] if result else None
+        results = tbl.search().where(f'collection_id = "{collection_id}"', prefilter=True).limit(1).to_list()
+        if not results:
+            return None
+        rows = tbl.search().where(f'collection_id = "{collection_id}"', prefilter=True).limit(100).to_list()
+        rows.sort(key=lambda r: r.get("version", 0), reverse=True)
+        return rows[0]
     except Exception:
         return None
+
+
+async def list_ontology_versions(collection_id: str, limit: int = 20, offset: int = 0) -> list[dict]:
+    db = await get_lancedb()
+    try:
+        tbl = db.open_table("ontologies")
+        rows = tbl.search().where(f'collection_id = "{collection_id}"', prefilter=True).limit(100).to_list()
+        rows.sort(key=lambda r: r.get("version", 0), reverse=True)
+        return rows[offset:offset + limit]
+    except Exception:
+        return []
 
 
 async def upsert_ontology(ontology: dict) -> None:
@@ -822,15 +881,9 @@ async def upsert_ontology(ontology: dict) -> None:
     ontology["updated_at"] = int(datetime.utcnow().timestamp() * 1_000_000)
     try:
         tbl = db.open_table("ontologies")
-        tbl.delete(f'collection_id = "{ontology["collection_id"]}"')
-    except Exception:
-        pass
-    try:
-        tbl = db.open_table("ontologies")
+        tbl.add([ontology])
     except Exception:
         db.create_table("ontologies", data=[ontology], exist_ok=True)
-        return
-    tbl.add([ontology])
 
 
 # ---------------------------------------------------------------------------
@@ -868,6 +921,7 @@ async def list_topics(collection_id: str) -> list[dict]:
 
 async def insert_user_feedback(feedback: dict) -> None:
     db = await get_lancedb()
+    feedback.setdefault("id", str(uuid.uuid4()))
     feedback.setdefault("created_at", int(datetime.utcnow().timestamp() * 1_000_000))
     try:
         tbl = db.open_table("user_feedback")
@@ -875,6 +929,26 @@ async def insert_user_feedback(feedback: dict) -> None:
         db.create_table("user_feedback", data=[feedback], exist_ok=True)
         return
     tbl.add([feedback])
+
+
+async def list_user_feedback(
+    collection_id: str,
+    action: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    db = await get_lancedb()
+    try:
+        tbl = db.open_table("user_feedback")
+        q = tbl.search().where(f'collection_id = "{collection_id}"', prefilter=True)
+        if action:
+            safe_action = _safe_str(action)
+            q = q.where(f'action = "{safe_action}"', prefilter=True)
+        rows = q.limit(1000).to_list()
+        rows.sort(key=lambda r: r.get("created_at", 0), reverse=True)
+        return rows[offset:offset + limit]
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -903,7 +977,8 @@ async def is_token_revoked(jti: str) -> bool:
     db = await get_lancedb()
     try:
         tbl = db.open_table("revoked_tokens")
-        results = tbl.search().where(f"jti = '{jti}'").limit(1).to_list()
+        safe_jti = _safe_str(jti)
+        results = tbl.search().where(f'jti = "{safe_jti}"').limit(1).to_list()
         return len(results) > 0
     except Exception:
         return False
