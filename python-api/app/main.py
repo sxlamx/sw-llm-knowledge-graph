@@ -14,7 +14,7 @@ import os
 
 from app.config import get_settings
 from app.core.logging_config import setup_logging
-from app.core.rust_bridge import get_index_manager, _tantivy_commit_loop
+from app.core.rust_bridge import get_index_manager, _tantivy_commit_loop, _graph_prune_loop
 from app.core.metrics import KG_PENDING_WRITES, KG_INDEX_STATE, KG_CONCURRENT_SEARCHES
 from app.db.lancedb_client import get_lancedb, init_system_tables
 from app.auth.middleware import auth_middleware, rate_limit_middleware
@@ -22,6 +22,7 @@ from app.auth.csrf import csrf_middleware, generate_csrf_token, set_csrf_cookie
 from app.routers import auth, collections, ingest, search, documents
 from app.routers import graph, ontology, topics
 from app.routers import drive, analytics, agent, finetune, admin
+from app.routers import templates
 from app.routers.ws import router as ws_router
 
 settings = get_settings()
@@ -31,6 +32,17 @@ setup_logging(
     log_level=settings.rust_log,
 )
 logger = logging.getLogger(__name__)
+
+
+async def _get_all_collection_ids_from_db() -> list[str]:
+    """List all collection IDs from LanceDB (used by graph prune loop)."""
+    try:
+        db = await get_lancedb()
+        tbl = db.open_table("collections")
+        rows = tbl.to_list()
+        return [str(r.get("id", "")) for r in rows if r.get("id")]
+    except Exception:
+        return []
 
 
 @asynccontextmanager
@@ -47,11 +59,44 @@ async def lifespan(app: FastAPI):
     # Phase 3: start Tantivy batch-commit background task (500 ms interval).
     commit_task = asyncio.create_task(_tantivy_commit_loop(interval_seconds=0.5))
 
+    # Phase 4: start graph pruning background task (hourly).
+    async def _list_active_collection_ids():
+        """Return list of collection IDs that have an in-memory graph."""
+        im = get_index_manager()
+        if im is None:
+            return []
+        try:
+            graph_data_raw = None
+            for cid_obj in await _list_all_collection_ids():
+                cid = str(cid_obj)
+                try:
+                    graph_data_raw = im.get_graph_data(cid)
+                    if graph_data_raw:
+                        pass
+                except Exception:
+                    pass
+            # We need the actual collection ID list, not from graph_data
+            # which is per-collection. Use the DB instead.
+            pass
+        except Exception:
+            pass
+        # Fallback: get collection IDs from LanceDB
+        return await _get_all_collection_ids_from_db()
+
+    prune_task = asyncio.create_task(
+        _graph_prune_loop(collection_ids_fn=_get_all_collection_ids_from_db)
+    )
+
     yield
 
     commit_task.cancel()
+    prune_task.cancel()
     try:
         await commit_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await prune_task
     except asyncio.CancelledError:
         pass
 
@@ -96,6 +141,7 @@ app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytic
 app.include_router(agent.router, prefix="/api/v1/agent", tags=["agent"])
 app.include_router(finetune.router, prefix="/api/v1/finetune", tags=["finetune"])
 app.include_router(admin.router,   prefix="/api/v1/admin",   tags=["admin"])
+app.include_router(templates.router, prefix="/api/v1/templates", tags=["templates"])
 app.include_router(ws_router, tags=["websocket"])
 
 
@@ -133,7 +179,6 @@ async def health_check():
             content={
                 "status": "degraded",
                 "version": "0.1.0",
-                "error": str(e),
             }
         )
 
