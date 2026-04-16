@@ -77,15 +77,15 @@ describe('ENTITY_TYPE_COLORS', () => {
   });
 
   it('DATE color is defined', () => {
-    expect(ENTITY_TYPE_COLORS['DATE']).toBe('#78909C');
+    expect(ENTITY_TYPE_COLORS['DATE']).toBe('#546E7A');
   });
 
   it('MONEY color is defined', () => {
-    expect(ENTITY_TYPE_COLORS['MONEY']).toBe('#8BC34A');
+    expect(ENTITY_TYPE_COLORS['MONEY']).toBe('#558B2F');
   });
 
   it('PERCENT color is defined', () => {
-    expect(ENTITY_TYPE_COLORS['PERCENT']).toBe('#B0BEC5');
+    expect(ENTITY_TYPE_COLORS['PERCENT']).toBe('#6D4C41');
   });
 
   it('LAW color is defined', () => {
