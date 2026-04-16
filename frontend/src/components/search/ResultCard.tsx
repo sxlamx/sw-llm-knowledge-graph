@@ -26,9 +26,19 @@ const ResultCard: React.FC<Props> = ({ result }) => {
 
   const renderText = () => {
     if ((result.highlights?.length ?? 0) > 0) {
-      return result.highlights!.map((h, i) => (
-        <span key={i} dangerouslySetInnerHTML={{ __html: h }} />
-      ));
+      const snippet = result.text.slice(0, 300) + (result.text.length > 300 ? '...' : '');
+      const parts: React.ReactNode[] = [];
+      let remaining = snippet;
+      let keyIdx = 0;
+      for (const hl of result.highlights!) {
+        const idx = remaining.toLowerCase().indexOf(hl.toLowerCase());
+        if (idx === -1) continue;
+        if (idx > 0) parts.push(remaining.slice(0, idx));
+        parts.push(<mark key={keyIdx++}>{remaining.slice(idx, idx + hl.length)}</mark>);
+        remaining = remaining.slice(idx + hl.length);
+      }
+      if (remaining) parts.push(remaining);
+      return <>{parts}</>;
     }
     return result.text.slice(0, 300) + (result.text.length > 300 ? '...' : '');
   };
@@ -99,7 +109,7 @@ const ResultCard: React.FC<Props> = ({ result }) => {
                 variant="outlined"
                 sx={{ height: 20, fontSize: '0.65rem' }}
               />
-              <IconButton size="small" onClick={() => setImgExpanded((v) => !v)} sx={{ p: 0.25 }}>
+              <IconButton size="small" onClick={() => setImgExpanded((v) => !v)} aria-label={imgExpanded ? 'Collapse page image' : 'Expand page image'} sx={{ p: 0.25 }}>
                 {imgExpanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
               </IconButton>
             </Stack>

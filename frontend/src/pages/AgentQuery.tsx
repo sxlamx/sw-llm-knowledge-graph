@@ -124,7 +124,7 @@ const AgentQuery: React.FC = () => {
     <Box sx={{ maxWidth: 860, mx: 'auto' }}>
       {/* Header */}
       <Stack direction="row" alignItems="center" spacing={1} mb={3}>
-        <IconButton onClick={() => navigate(`/collection/${collectionId}`)}>
+        <IconButton onClick={() => navigate(`/collection/${collectionId}`)} aria-label="Back to collection">
           <ArrowBackIcon />
         </IconButton>
         <Box flex={1}>

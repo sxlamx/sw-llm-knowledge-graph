@@ -66,7 +66,7 @@ const JobStatusPanel: React.FC<{ jobId: string }> = ({ jobId }) => {
         </Typography>
         <Box flex={1} />
         <Tooltip title="Refresh">
-          <IconButton size="small" onClick={refetch} disabled={isLoading}>
+          <IconButton size="small" onClick={refetch} disabled={isLoading} aria-label="Refresh job status">
             <RefreshIcon fontSize="small" />
           </IconButton>
         </Tooltip>
@@ -343,7 +343,7 @@ const FineTune: React.FC = () => {
     <Box sx={{ maxWidth: 800, mx: 'auto' }}>
       {/* Header */}
       <Stack direction="row" alignItems="center" spacing={1} mb={3}>
-        <IconButton onClick={() => navigate(`/collection/${collectionId}`)}>
+        <IconButton onClick={() => navigate(`/collection/${collectionId}`)} aria-label="Back to collection">
           <ArrowBackIcon />
         </IconButton>
         <Box flex={1}>

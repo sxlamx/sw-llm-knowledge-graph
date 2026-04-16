@@ -79,7 +79,7 @@ const Collection: React.FC = () => {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={3}>
-        <IconButton onClick={() => navigate('/dashboard')}>
+        <IconButton onClick={() => navigate('/dashboard')} aria-label="Back to dashboard">
           <ArrowBackIcon />
         </IconButton>
         <Box flex={1}>
@@ -186,13 +186,14 @@ const Collection: React.FC = () => {
                         <Tooltip title="View document graph">
                           <IconButton
                             size="small"
+                            aria-label="View document graph"
                             onClick={() => navigate(`/graph/${id}?doc_id=${doc.id}`)}
                           >
                             <AccountTreeIcon fontSize="small" />
                           </IconButton>
                         </Tooltip>
                         <Tooltip title="Delete document">
-                          <IconButton size="small" color="error" onClick={() => handleDeleteDoc(doc.id)}>
+                          <IconButton size="small" color="error" aria-label="Delete document" onClick={() => handleDeleteDoc(doc.id)}>
                             <DeleteIcon fontSize="small" />
                           </IconButton>
                         </Tooltip>

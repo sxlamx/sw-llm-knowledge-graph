@@ -45,6 +45,7 @@ const NavBar: React.FC = () => {
           color="inherit"
           edge="start"
           onClick={() => dispatch(setDrawerOpen(true))}
+          aria-label="open navigation menu"
           sx={{ mr: 1 }}
         >
           <MenuIcon />
@@ -62,7 +63,7 @@ const NavBar: React.FC = () => {
 
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <Tooltip title="Toggle theme">
-            <IconButton color="inherit" onClick={() => dispatch(toggleTheme())}>
+            <IconButton color="inherit" onClick={() => dispatch(toggleTheme())} aria-label="Toggle theme">
               {themeMode === 'dark' ? <Brightness7Icon /> : <Brightness4Icon />}
             </IconButton>
           </Tooltip>
@@ -75,6 +76,9 @@ const NavBar: React.FC = () => {
                   alt={user.name}
                   sx={{ width: 32, height: 32, cursor: 'pointer' }}
                   onClick={() => navigate('/settings')}
+                  slotProps={{
+                    root: { 'aria-label': 'User settings' },
+                  }}
                 />
               </Tooltip>
               <Button color="inherit" size="small" onClick={handleLogout}>

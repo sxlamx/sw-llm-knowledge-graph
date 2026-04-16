@@ -118,9 +118,15 @@ describe('Dashboard', () => {
     renderWithProviders(<Dashboard />);
     await waitFor(() => expect(screen.getByText('Research Papers')).toBeInTheDocument());
 
-    // Find delete button by aria-label or Tooltip title (on parent Tooltip)
-    const deleteButtons = screen.getAllByRole('button', { name: /delete/i });
+    const deleteButtons = screen.getAllByRole('button', { name: /delete collection/i });
     fireEvent.click(deleteButtons[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText('Delete collection?')).toBeInTheDocument();
+    });
+
+    const confirmButtons = screen.getAllByRole('button', { name: /^delete$/i });
+    fireEvent.click(confirmButtons[0]);
 
     await waitFor(() => {
       expect(mockUseDeleteCollectionMutation).toHaveBeenCalledWith('col-1');

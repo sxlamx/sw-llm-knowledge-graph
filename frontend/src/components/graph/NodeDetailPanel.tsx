@@ -26,6 +26,7 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import { GraphNode, useGetGraphNodeQuery, useUpdateGraphNodeMutation, useGetNodeSummaryQuery } from '../../api/graphApi';
 import { useAppDispatch } from '../../store';
 import { showSnackbar } from '../../store/slices/uiSlice';
+import { ENTITY_TYPE_COLORS } from '../../utils/entityColors';
 
 interface LinkedChunk {
   chunk_id: string;
@@ -53,7 +54,7 @@ const LinkedChunkItem: React.FC<{ chunk: LinkedChunk }> = ({ chunk }) => {
           {chunk.doc_title}{chunk.page != null ? ` · p.${chunk.page}` : ''}
         </Typography>
         {chunk.has_image && chunk.image_b64 && (
-          <IconButton size="small" onClick={() => setImgExpanded((v) => !v)} sx={{ p: 0.25 }}>
+          <IconButton size="small" onClick={() => setImgExpanded((v) => !v)} aria-label={imgExpanded ? 'Collapse chunk image' : 'Expand chunk image'} sx={{ p: 0.25 }}>
             {imgExpanded ? <ExpandLessIcon sx={{ fontSize: '0.85rem' }} /> : <ExpandMoreIcon sx={{ fontSize: '0.85rem' }} />}
           </IconButton>
         )}
@@ -92,16 +93,6 @@ const LinkedChunkItem: React.FC<{ chunk: LinkedChunk }> = ({ chunk }) => {
       )}
     </ListItem>
   );
-};
-
-const ENTITY_TYPE_COLORS: Record<string, 'primary' | 'secondary' | 'success' | 'warning' | 'error' | 'info' | 'default'> = {
-  Person: 'success',
-  Organization: 'primary',
-  Location: 'warning',
-  Concept: 'secondary',
-  Event: 'error',
-  Document: 'default',
-  Topic: 'info',
 };
 
 interface Props {
@@ -167,15 +158,15 @@ const NodeDetailPanel: React.FC<Props> = ({ node, collectionId, onClose }) => {
           )}
           <Stack direction="row">
             {isEditing ? (
-              <IconButton size="small" onClick={handleSave} disabled={isSaving}>
+              <IconButton size="small" onClick={handleSave} disabled={isSaving} aria-label="Save node edits">
                 <SaveIcon fontSize="small" />
               </IconButton>
             ) : (
-              <IconButton size="small" onClick={() => setIsEditing(true)}>
+              <IconButton size="small" onClick={() => setIsEditing(true)} aria-label="Edit node">
                 <EditIcon fontSize="small" />
               </IconButton>
             )}
-            <IconButton size="small" onClick={onClose}>
+            <IconButton size="small" onClick={onClose} aria-label="Close node detail panel">
               <CloseIcon fontSize="small" />
             </IconButton>
           </Stack>
@@ -183,9 +174,8 @@ const NodeDetailPanel: React.FC<Props> = ({ node, collectionId, onClose }) => {
 
         <Chip
           label={node.entity_type}
-          color={ENTITY_TYPE_COLORS[node.entity_type] ?? 'default'}
           size="small"
-          sx={{ mb: 1.5 }}
+          sx={{ mb: 1.5, bgcolor: ENTITY_TYPE_COLORS[node.entity_type] ?? '#888', color: '#fff' }}
         />
 
         {isEditing ? (
@@ -219,6 +209,7 @@ const NodeDetailPanel: React.FC<Props> = ({ node, collectionId, onClose }) => {
             <IconButton
               size="small"
               disabled={summaryLoading || summaryFetching}
+              aria-label="Regenerate summary"
               onClick={() => {
                 setForceRegen(true);
                 setTimeout(() => {
