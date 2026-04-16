@@ -1,25 +1,8 @@
 import React, { useCallback, useRef } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
+import { Box } from '@mui/material';
 import { GraphData, GraphNode, GraphEdge } from '../../api/graphApi';
-
-export const ENTITY_TYPE_COLORS: Record<string, string> = {
-  // Canonical labels produced by ner_tagger.py (SPACY_TO_CANONICAL mapping)
-  PERSON: '#4CAF50',
-  ORGANIZATION: '#2196F3',
-  LOCATION: '#FF9800',
-  LAW: '#607D8B',
-  DATE: '#78909C',
-  MONEY: '#8BC34A',
-  PERCENT: '#B0BEC5',
-  // LLM extractor labels (TitleCase) — kept for forward-compat
-  Person: '#4CAF50',
-  Organization: '#2196F3',
-  Location: '#FF9800',
-  Concept: '#9C27B0',
-  Event: '#F44336',
-  Document: '#607D8B',
-  Topic: '#00BCD4',
-};
+import { ENTITY_TYPE_COLORS } from '../../utils/entityColors';
 
 interface ForceGraphNode extends GraphNode {
   x?: number;
@@ -183,27 +166,32 @@ const ForceGraph: React.FC<Props> = ({
     [nodeViewers, analyticsScores, nodeClusterLabels, clusterColors, showLabels]
   );
 
+  const ariaLabel = `Knowledge graph visualization with ${nodes.length} nodes and ${links.length} edges. Use mouse to pan and zoom. Click nodes for details.`;
+
   return (
-    <ForceGraph2D
-      ref={fgRef as React.MutableRefObject<never>}
-      graphData={{ nodes, links }}
-      nodeId="id"
-      nodeLabel={(n: object) => (n as ForceGraphNode).label}
-      nodeColor={getNodeColor}
-      nodeVal={analyticsScores ? getNodeVal : undefined}
-      linkColor={getLinkColor}
-      linkWidth={(l: object) => Math.max((l as ForceGraphLink).weight * 2, 0.5)}
-      onNodeClick={(node: object) => onNodeClick(node as GraphNode)}
-      onNodeHover={onNodeHover ? (node: object | null) => onNodeHover(node as GraphNode | null) : undefined}
-      nodeCanvasObjectMode={() => (nodeViewers || nodeClusterLabels || showLabels ? 'after' : undefined)}
-      nodeCanvasObject={nodeViewers || nodeClusterLabels || showLabels ? nodeCanvasObject : undefined}
-      width={width}
-      height={height}
-      nodeRelSize={5}
-      enableNodeDrag
-      enableZoomInteraction
-      cooldownTicks={100}
-    />
+    <Box role="img" aria-label={ariaLabel} sx={{ width: '100%', height: '100%' }}>
+      <ForceGraph2D
+        ref={fgRef as React.MutableRefObject<never>}
+        graphData={{ nodes, links }}
+        nodeId="id"
+        nodeLabel={(n: object) => (n as ForceGraphNode).label}
+        nodeColor={getNodeColor}
+        nodeVal={analyticsScores ? getNodeVal : undefined}
+        linkColor={getLinkColor}
+        linkWidth={(l: object) => Math.max((l as ForceGraphLink).weight * 2, 0.5)}
+        onNodeClick={(node: object) => onNodeClick(node as GraphNode)}
+        onNodeHover={onNodeHover ? (node: object | null) => onNodeHover(node as GraphNode | null) : undefined}
+        nodeCanvasObjectMode={() => (nodeViewers || nodeClusterLabels || showLabels ? 'after' : undefined)}
+        nodeCanvasObject={nodeViewers || nodeClusterLabels || showLabels ? nodeCanvasObject : undefined}
+        width={width}
+        height={height}
+        nodeRelSize={5}
+        enableNodeDrag
+        enableZoomInteraction
+        cooldownTime={3000}
+        warmupTicks={100}
+      />
+    </Box>
   );
 };
 
