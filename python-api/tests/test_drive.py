@@ -244,8 +244,8 @@ class TestDriveWebhook:
 
         assert response.status_code == 200
 
-    async def test_unknown_channel_returns_200(self, app):
-        """Unknown channel IDs are silently ignored — Google may retry."""
+    async def test_unknown_channel_returns_403(self, app):
+        """Unknown channel IDs are rejected with 403 — prevents unauthenticated webhook abuse."""
         with patch("app.routers.drive.get_drive_channel", new_callable=AsyncMock, return_value=None):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 response = await ac.post(
@@ -256,12 +256,60 @@ class TestDriveWebhook:
                     },
                 )
 
-        assert response.status_code == 200
+        assert response.status_code == 403
 
     async def test_missing_channel_header_returns_200(self, app):
         """Webhook without channel header should not crash."""
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             response = await ac.post("/drive/webhook")
+
+        assert response.status_code == 200
+
+    async def test_webhook_rejects_missing_channel_token(self, app):
+        channel_with_token = {**FAKE_CHANNEL, "verification_token": "secret-token-123"}
+        with patch("app.routers.drive.get_drive_channel", new_callable=AsyncMock, return_value=channel_with_token):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                response = await ac.post(
+                    "/drive/webhook",
+                    headers={
+                        "X-Goog-Channel-ID": FAKE_CHANNEL_ID,
+                        "X-Goog-Resource-State": "change",
+                    },
+                )
+
+        assert response.status_code == 403
+
+    async def test_webhook_rejects_wrong_channel_token(self, app):
+        channel_with_token = {**FAKE_CHANNEL, "verification_token": "secret-token-123"}
+        with patch("app.routers.drive.get_drive_channel", new_callable=AsyncMock, return_value=channel_with_token):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                response = await ac.post(
+                    "/drive/webhook",
+                    headers={
+                        "X-Goog-Channel-ID": FAKE_CHANNEL_ID,
+                        "X-Goog-Channel-Token": "wrong-token",
+                        "X-Goog-Resource-State": "change",
+                    },
+                )
+
+        assert response.status_code == 403
+
+    async def test_webhook_accepts_valid_channel_token(self, app):
+        channel_with_token = {**FAKE_CHANNEL, "verification_token": "secret-token-123"}
+        with (
+            patch("app.routers.drive.get_drive_channel", new_callable=AsyncMock, return_value=channel_with_token),
+            patch("app.routers.drive.create_ingest_job", new_callable=AsyncMock, return_value=None),
+            patch("app.services.drive_service.run_drive_ingest_pipeline", new_callable=AsyncMock),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                response = await ac.post(
+                    "/drive/webhook",
+                    headers={
+                        "X-Goog-Channel-ID": FAKE_CHANNEL_ID,
+                        "X-Goog-Channel-Token": "secret-token-123",
+                        "X-Goog-Resource-State": "change",
+                    },
+                )
 
         assert response.status_code == 200
 

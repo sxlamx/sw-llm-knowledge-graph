@@ -77,8 +77,8 @@ _SYSTEM_SCHEMAS: dict[str, pa.Schema] = {
     "drive_watch_channels": pa.schema([
         pa.field("channel_id", _STR), pa.field("resource_id", _STR),
         pa.field("collection_id", _STR), pa.field("folder_id", _STR),
-        pa.field("access_token", _STR), pa.field("expiry_ms", _I64),
-        pa.field("created_at", _I64),
+        pa.field("access_token", _STR), pa.field("verification_token", _STR),
+        pa.field("expiry_ms", _I64), pa.field("created_at", _I64),
     ]),
     "user_feedback": pa.schema([
         pa.field("id", _STR), pa.field("collection_id", _STR),
@@ -244,10 +244,13 @@ async def create_or_update_user(user_data: dict) -> str:
         return user_data["id"]
     else:
         user_data["created_at"] = int(now.timestamp() * 1_000_000)
-        # First user ever → admin + active; subsequent new users → pending
         if await _user_count() == 0:
-            user_data.setdefault("role",   "admin")
-            user_data.setdefault("status", "active")
+            if settings.first_user_admin:
+                user_data.setdefault("role",   "admin")
+                user_data.setdefault("status", "active")
+            else:
+                user_data.setdefault("role",   "user")
+                user_data.setdefault("status", "pending")
         else:
             user_data.setdefault("role",   "user")
             user_data.setdefault("status", "pending")
@@ -388,6 +391,8 @@ async def get_drive_channel(channel_id: str) -> Optional[dict]:
     db = await get_lancedb()
     try:
         tbl = db.open_table("drive_watch_channels")
+        if "verification_token" not in tbl.schema.names:
+            tbl.add_columns({"verification_token": "cast('' as string)"})
         results = tbl.search().where(f'channel_id = "{channel_id}"', prefilter=True).limit(1).to_list()
         return results[0] if results else None
     except Exception:

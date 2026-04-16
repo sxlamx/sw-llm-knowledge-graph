@@ -173,7 +173,13 @@ async def drive_webhook(request: Request, background_tasks: BackgroundTasks):
     channel = await get_drive_channel(channel_id)
     if not channel:
         logger.warning("Drive webhook: unknown channel_id=%s", channel_id)
-        return Response(status_code=200)
+        return Response(status_code=403)
+
+    channel_token = request.headers.get("X-Goog-Channel-Token", "")
+    expected_token = channel.get("verification_token", "")
+    if expected_token and channel_token != expected_token:
+        logger.warning("Drive webhook: channel_token mismatch for channel_id=%s", channel_id)
+        return Response(status_code=403)
 
     # Trigger incremental re-ingest in the background.
     job_id = str(uuid.uuid4())
