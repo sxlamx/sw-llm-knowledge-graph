@@ -44,10 +44,13 @@ from app.db.lancedb_client import (
     delete_graph_edge,
     list_documents,
     insert_user_feedback,
+    list_user_feedback,
     get_node_summary,
     upsert_node_summary,
     get_chunk_ids_with_ner_labels,
     get_chunk_ids_with_ner_keywords,
+    _safe_id,
+    _safe_str,
 )
 from app.core.rust_bridge import get_index_manager
 from app.models.schemas import (
@@ -83,6 +86,11 @@ def _edge_to_response(e: dict) -> GraphEdgeResponse:
         weight=float(e.get("weight", 1.0)),
         properties=_parse_props(e.get("properties")),
         collection_id=e.get("collection_id"),
+        predicate=e.get("predicate", e.get("relation_type", "")),
+        time=e.get("time"),
+        location=e.get("location"),
+        participants=e.get("participants"),
+        doc_origins=e.get("doc_origins"),
     )
 
 
@@ -133,7 +141,7 @@ async def get_subgraph(
         db = await get_lancedb()
         try:
             tbl = db.open_table(f"{collection_id}_chunks")
-            rows = tbl.search().where(f'doc_id = "{doc_id}"', prefilter=True).to_list()
+            rows = tbl.search().where(f'doc_id = "{_safe_str(doc_id)}"', prefilter=True).to_list()
             doc_chunk_ids = {r["id"] for r in rows if r.get("id")}
         except Exception:
             doc_chunk_ids = set()
@@ -265,7 +273,7 @@ async def get_node_detail(
             # Fetch doc metadata for titles
             docs = {d["id"]: d for d in await list_documents(collection_id)}
             for cid in chunk_ids[:200]:
-                rows = tbl.search().where(f'id = "{cid}"', prefilter=True).limit(1).to_list()
+                rows = tbl.search().where(f'id = "{_safe_id(cid)}"', prefilter=True).limit(1).to_list()
                 if rows:
                     c = rows[0]
                     doc = docs.get(c.get("doc_id", ""), {})
@@ -313,8 +321,6 @@ async def get_node_summary_endpoint(
 ):
     """Return a cached LLM summary for a node; regenerate if chunks changed."""
     import hashlib
-    import httpx
-    from app.config import get_settings
 
     await _require_collection_access(collection_id, current_user)
 
@@ -337,7 +343,7 @@ async def get_node_summary_endpoint(
         try:
             tbl = db.open_table(f"{collection_id}_chunks")
             for cid in chunk_ids[:20]:  # cap to avoid huge prompts
-                rows = tbl.search().where(f'id = "{cid}"', prefilter=True).limit(1).to_list()
+                rows = tbl.search().where(f'id = "{_safe_id(cid)}"', prefilter=True).limit(1).to_list()
                 if rows:
                     text = rows[0].get("contextual_text") or rows[0].get("text", "")
                     if text.strip():
@@ -362,54 +368,46 @@ async def get_node_summary_endpoint(
             )
 
     # Generate summary via LLM
-    settings = get_settings()
+    from app.llm.ollama_client import call_ollama_cloud, OllamaCloudError
+
     node_label = node.get("label", node_id)
     node_desc = node.get("description", "")
     entity_type = node.get("entity_type", "entity")
 
     if chunk_texts:
         excerpts = "\n\n---\n\n".join(chunk_texts)
-        prompt = (
-            f"You are analysing a knowledge graph node.\n\n"
+        user_prompt = (
             f"Node: {node_label} (type: {entity_type})\n"
             f"Description: {node_desc}\n\n"
             f"Source document excerpts:\n{excerpts}\n\n"
             "Write a concise 2-4 sentence summary of what this entity represents "
             "based on the source excerpts. Focus on facts, roles, and relationships."
         )
+        system_prompt = "You are analysing a knowledge graph node."
     else:
-        prompt = (
+        user_prompt = (
             f"Describe the entity '{node_label}' (type: {entity_type}) "
             f"based on this description: {node_desc or 'no description available'}. "
             "Keep it to 2-3 sentences."
         )
+        system_prompt = "You are an entity description assistant."
 
-    # Build a static fallback summary from node metadata (used when LLM is unavailable)
     fallback_summary = (
-        f"{node_label} is a {entity_type.lower()} entity."
+        f"{node_label} is a {entity_type} entity."
         + (f" {node_desc}" if node_desc else "")
     ).strip()
 
     summary = fallback_summary
-    llm_available = bool(settings.ollama_cloud_base_url)
-    if llm_available:
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
-                    f"{settings.ollama_cloud_base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {settings.ollama_cloud_api_key}"},
-                    json={
-                        "model": settings.ollama_cloud_model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "max_tokens": 200,
-                        "temperature": 0.3,
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                summary = data["choices"][0]["message"]["content"].strip()
-        except Exception:
-            summary = fallback_summary
+    try:
+        response = await call_ollama_cloud(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=200,
+            temperature=0.3,
+        )
+        summary = response["content"]
+    except (OllamaCloudError, Exception):
+        summary = fallback_summary
 
     now = int(__import__("time").time() * 1_000_000)
     await upsert_node_summary(collection_id, node_id, summary, chunk_hash)
@@ -563,8 +561,13 @@ async def create_edge(
         "target_id": body.target,
         "relation_type": body.relation_type,
         "edge_type": body.relation_type,
+        "predicate": body.relation_type,
         "weight": body.weight,
         "properties": body.properties,
+        "time": None,
+        "location": None,
+        "participants": None,
+        "doc_origins": [],
     }
     await upsert_graph_edge(body.collection_id, edge)
 
@@ -576,11 +579,16 @@ async def create_edge(
                 "source": edge["source"],
                 "target": edge["target"],
                 "edge_type": {"custom": body.relation_type},
+                "predicate": body.relation_type,
                 "weight": body.weight,
                 "context": None,
                 "chunk_id": None,
                 "properties": {},
                 "collection_id": body.collection_id,
+                "time": None,
+                "location": None,
+                "participants": None,
+                "doc_origins": [],
             }
             im.upsert_edges(body.collection_id, json.dumps([rust_edge]))
         except Exception:
@@ -700,3 +708,16 @@ async def export_graph(
     edges = await list_graph_edges(collection_id)
     data = {"nodes": nodes, "edges": edges}
     return PlainTextResponse(json.dumps(data), media_type="application/json")
+
+
+@router.get("/feedback")
+async def list_feedback(
+    collection_id: str = Query(...),
+    action: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    current_user: dict = Depends(get_current_user),
+):
+    await _require_collection_access(collection_id, current_user)
+    rows = await list_user_feedback(collection_id, action=action, limit=limit, offset=offset)
+    return {"feedback": rows, "total": len(rows), "offset": offset, "limit": limit}

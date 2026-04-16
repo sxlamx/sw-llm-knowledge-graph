@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 from app.auth.middleware import get_current_user
-from app.db.lancedb_client import get_collection, get_lancedb
+from app.db.lancedb_client import get_collection, get_lancedb, _safe_str
 from app.models.schemas import DocumentResponse, DocumentListResponse, DocumentDetailResponse
 import logging
 
@@ -15,10 +15,10 @@ async def _get_chunks_for_doc(collection_id: str, doc_id: str) -> list[dict]:
     try:
         db = await get_lancedb()
         tbl = db.open_table(f"{collection_id}_chunks")
-        escaped = doc_id.replace('"', '\\"')
+        safe_doc_id = _safe_str(doc_id)
         return (
             tbl.search()
-            .where(f'doc_id = "{escaped}"', prefilter=True)
+            .where(f'doc_id = "{safe_doc_id}"', prefilter=True)
             .select(["id", "doc_id", "path", "text", "position", "page", "created_at", "doc_summary"])
             .limit(50_000)
             .to_list()

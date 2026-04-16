@@ -39,3 +39,36 @@ class TestLanceDBSanitization:
     def test_safe_str_escapes_double_quotes(self):
         result = _safe_str('say "hello"')
         assert '\\"' in result
+
+
+# ---------------------------------------------------------------------------
+# Task 1.3: Graph and document router injection protection
+# ---------------------------------------------------------------------------
+
+class TestGraphRouterInjection:
+    """Verify that graph.py and documents.py use sanitized WHERE params."""
+
+    def test_graph_router_imports_safe_id(self):
+        from app.routers.graph import _safe_id as graph_safe_id
+        assert graph_safe_id is _safe_id
+
+    def test_graph_router_imports_safe_str(self):
+        from app.routers.graph import _safe_str as graph_safe_str
+        assert graph_safe_str is _safe_str
+
+    def test_documents_router_uses_safe_str(self):
+        import inspect
+        from app.routers.documents import _get_chunks_for_doc
+        source = inspect.getsource(_get_chunks_for_doc)
+        assert "_safe_str" in source, "documents.py must use _safe_str for doc_id"
+        assert ".replace" not in source or "_safe_str" in source, \
+            "documents.py should use _safe_str, not manual .replace"
+
+    def test_safe_id_rejects_sql_injection_in_graph_context(self):
+        with pytest.raises(ValueError):
+            _safe_id("node'; DROP TABLE nodes;--")
+
+    def test_safe_str_prevents_early_termination_in_doc_id(self):
+        result = _safe_str('doc"; DROP TABLE chunks;--')
+        assert '\\"' in result
+        assert "DROP" not in result.split('\\"')[0]
