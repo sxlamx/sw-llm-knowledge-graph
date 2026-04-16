@@ -8,4 +8,7 @@ RUN npm run build
 FROM nginx:1.27-alpine AS production
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY docker/nginx.conf /etc/nginx/nginx.conf
+RUN addgroup -S appuser && adduser -S -G appuser -h /usr/share/nginx/html -s /sbin/nologin appuser && \
+    chown -R appuser:appuser /usr/share/nginx/html /var/cache/nginx /var/log/nginx /tmp
+USER appuser
 EXPOSE 80

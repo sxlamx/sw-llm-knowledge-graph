@@ -35,8 +35,11 @@ RUN pip install --no-cache-dir ".[dev,multimodal]" || pip install --no-cache-dir
 
 COPY python-api/ /app/
 
-# Create directories expected at runtime
-RUN mkdir -p /data/lancedb /data/documents /run/secrets
+RUN mkdir -p /data/lancedb /data/documents /run/secrets && \
+    groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser && \
+    chown -R appuser:appuser /data /app
+
+USER appuser
 
 EXPOSE 8000
 
