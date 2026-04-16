@@ -4,7 +4,7 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.auth.middleware import get_current_user
+from app.auth.middleware import get_current_user, require_admin
 from app.db.lancedb_client import get_collection
 
 router = APIRouter()
@@ -66,7 +66,7 @@ async def export_dataset(
 async def start_finetune(
     body: FineTuneRequest,
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Upload training data to OpenAI and start a fine-tuning job.
 
@@ -101,7 +101,7 @@ async def start_finetune(
 @router.post("/evaluate")
 async def evaluate_models(
     body: EvaluateRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Compare extraction quality between a fine-tuned model and the base model.
 
