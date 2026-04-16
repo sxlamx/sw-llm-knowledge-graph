@@ -15,6 +15,7 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
+  Button,
 } from '@mui/material';
 import AltRouteIcon from '@mui/icons-material/AltRoute';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
@@ -132,13 +133,12 @@ const EdgeTypeFilter: React.FC<EdgeFilterProps> = ({ activeEdgeTypes, onChange }
           )}
         </Typography>
         {!allSelected && (
-          <Typography component="span" variant="caption" color="text.secondary"
-            sx={{ mr: 0.5, fontSize: '0.6rem', '&:hover': { color: 'error.main' } }}
+          <Button size="small" variant="text" color="inherit" aria-label="Clear edge filters" sx={{ mr: 0.5, fontSize: '0.6rem', p: 0, minWidth: 0, color: 'text.secondary', '&:hover': { color: 'error.main' } }}
             onClick={(e) => { e.stopPropagation(); onChange([]); }}>
             clear
-          </Typography>
+          </Button>
         )}
-        <IconButton size="small" sx={{ p: 0.25 }}>
+        <IconButton size="small" sx={{ p: 0.25 }} aria-label={open ? 'Collapse edge types' : 'Expand edge types'}>
           {open ? <ExpandLessIcon sx={{ fontSize: 14 }} /> : <ExpandMoreIcon sx={{ fontSize: 14 }} />}
         </IconButton>
       </Stack>
@@ -255,11 +255,11 @@ const EntityNerFilter: React.FC<EntityNerFilterProps> = ({
           )}
         </Typography>
         {activeCount > 0 && (
-          <Typography component="span" variant="caption" color="text.secondary"
-            sx={{ mr: 0.5, fontSize: '0.6rem', cursor: 'pointer', '&:hover': { color: 'error.main' } }}
+          <Button size="small" variant="text" color="inherit" aria-label="Clear entity and NER filters"
+            sx={{ mr: 0.5, fontSize: '0.6rem', p: 0, minWidth: 0, cursor: 'pointer', color: 'text.secondary', '&:hover': { color: 'error.main' } }}
             onClick={() => { onEntityTypeFiltersChange([]); onNerLabelFiltersChange([]); }}>
             clear
-          </Typography>
+          </Button>
         )}
       </Stack>
 
@@ -297,7 +297,7 @@ const EntityNerFilter: React.FC<EntityNerFilterProps> = ({
                   </Typography>
                 )}
               </Typography>
-              <IconButton size="small" sx={{ p: 0.25 }} onClick={() => toggleGroupOpen(group.entityType)}>
+              <IconButton size="small" sx={{ p: 0.25 }} onClick={() => toggleGroupOpen(group.entityType)} aria-label={isOpen ? `Collapse ${group.entityType}` : `Expand ${group.entityType}`}>
                 {isOpen ? <ExpandLessIcon sx={{ fontSize: 12 }} /> : <ExpandMoreIcon sx={{ fontSize: 12 }} />}
               </IconButton>
             </Stack>
@@ -400,14 +400,14 @@ const GraphControls: React.FC<Props> = ({
   entityTypeFilters, onEntityTypeFiltersChange,
   nerLabelFilters, onNerLabelFiltersChange,
 }) => (
-  <Paper
-    elevation={3}
-    sx={{
-      position: 'absolute', top: 80, left: 16, zIndex: 10,
-      p: 1.5, width: 210, borderRadius: 2,
-      maxHeight: 'calc(100vh - 100px)', overflowY: 'auto',
-    }}
-  >
+    <Paper
+      elevation={3}
+      sx={{
+        position: 'absolute', top: 80, left: 16, zIndex: 10,
+        p: 1.5, width: { xs: '85vw', sm: 210 }, borderRadius: 2,
+        maxHeight: 'calc(100vh - 100px)', overflowY: 'auto',
+      }}
+    >
     <Typography variant="subtitle2" gutterBottom fontWeight={600}>Graph Controls</Typography>
 
     <Divider sx={{ mb: 1.5 }} />

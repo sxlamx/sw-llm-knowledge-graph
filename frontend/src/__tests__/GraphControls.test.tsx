@@ -35,7 +35,6 @@ describe('GraphControls', () => {
 
   it('renders all edge type chips', () => {
     setup();
-    // Expand the edge types section first (collapsed by default)
     fireEvent.click(screen.getByText('Edge types'));
     for (const type of EDGE_TYPES) {
       expect(screen.getByText(type)).toBeInTheDocument();
@@ -45,7 +44,6 @@ describe('GraphControls', () => {
   it('calls onEdgeTypeFiltersChange when an edge type is clicked', () => {
     const onEdgeTypeFiltersChange = vi.fn();
     setup({ onEdgeTypeFiltersChange });
-    // Expand the edge types section first
     fireEvent.click(screen.getByText('Edge types'));
     fireEvent.click(screen.getByText('WORKS_AT'));
     expect(onEdgeTypeFiltersChange).toHaveBeenCalled();
@@ -72,11 +70,28 @@ describe('GraphControls', () => {
 
   it('active edge type is checked in the list', () => {
     setup({ activeEdgeTypes: ['WORKS_AT'] });
-    // Expand edge types section
     fireEvent.click(screen.getByText('Edge types'));
-    // WORKS_AT checkbox should be checked
     const item = screen.getByText('WORKS_AT').closest('li');
     const checkbox = item?.querySelector('input[type="checkbox"]');
     expect(checkbox).toBeChecked();
+  });
+
+  it('renders edge type clear button with aria-label', () => {
+    setup({ activeEdgeTypes: ['WORKS_AT'] });
+    fireEvent.click(screen.getByText('Edge types'));
+    expect(screen.getByRole('button', { name: /clear edge filters/i })).toBeInTheDocument();
+  });
+
+  it('renders entity/NER clear button with aria-label when filters active', () => {
+    setup({ entityTypeFilters: ['Person'] });
+    expect(screen.getByRole('button', { name: /clear entity and ner filters/i })).toBeInTheDocument();
+  });
+
+  it('expand/collapse IconButtons have aria-labels', () => {
+    setup();
+    const expandBtn = screen.getByRole('button', { name: /expand edge types/i });
+    expect(expandBtn).toBeInTheDocument();
+    fireEvent.click(expandBtn);
+    expect(screen.getByRole('button', { name: /collapse edge types/i })).toBeInTheDocument();
   });
 });
