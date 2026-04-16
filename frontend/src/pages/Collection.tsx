@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -16,6 +16,10 @@ import {
   TableBody,
   Tooltip,
   IconButton,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
@@ -35,6 +39,7 @@ const Collection: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const dispatch = useAppDispatch();
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
   const { data: collection, isLoading: loadingCollection } = useGetCollectionQuery(id ?? '', {
     skip: !id,
@@ -193,7 +198,7 @@ const Collection: React.FC = () => {
                           </IconButton>
                         </Tooltip>
                         <Tooltip title="Delete document">
-                          <IconButton size="small" color="error" aria-label="Delete document" onClick={() => handleDeleteDoc(doc.id)}>
+                          <IconButton size="small" color="error" aria-label="Delete document" onClick={() => setDeleteTarget(doc.id)}>
                             <DeleteIcon fontSize="small" />
                           </IconButton>
                         </Tooltip>
@@ -210,6 +215,26 @@ const Collection: React.FC = () => {
           </Paper>
         </Grid>
       </Grid>
+
+      <Dialog open={deleteTarget !== null} onClose={() => setDeleteTarget(null)} maxWidth="xs">
+        <DialogTitle>Delete Document</DialogTitle>
+        <DialogContent>
+          This will permanently delete the document and all its chunks. This action cannot be undone.
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteTarget(null)}>Cancel</Button>
+          <Button
+            variant="contained"
+            color="error"
+            onClick={() => {
+              if (deleteTarget) handleDeleteDoc(deleteTarget);
+              setDeleteTarget(null);
+            }}
+          >
+            Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };
