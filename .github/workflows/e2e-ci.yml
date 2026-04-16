@@ -1,0 +1,36 @@
+name: E2E CI
+
+on:
+  push:
+    branches: [main]
+    paths: ['e2e/**', 'frontend/**', 'python-api/**']
+  pull_request:
+    paths: ['e2e/**', 'frontend/**', 'python-api/**']
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Install Playwright
+        run: cd e2e && npm ci && npx playwright install --with-deps chromium
+
+      - name: Run E2E tests
+        run: cd e2e && npx playwright test
+        env:
+          E2E_BASE_URL: http://localhost:5333
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: e2e/playwright-report/
