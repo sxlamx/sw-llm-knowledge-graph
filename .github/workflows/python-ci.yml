@@ -30,5 +30,14 @@ jobs:
       - name: Type check with mypy
         run: cd python-api && uv run mypy app/
 
-      - name: Run tests
-        run: cd python-api && uv run pytest tests/ -v
+      - name: Security audit
+        run: cd python-api && uv run pip install pip-audit && uv run pip-audit || true
+
+      - name: Run tests with coverage
+        run: cd python-api && uv run pytest tests/ -v --cov=app --cov-report=xml --cov-report=term-missing --ignore=tests/integration
+
+      - name: Upload coverage
+        if: always()
+        uses: codecov/codecov-action@v4
+        with:
+          files: python-api/coverage.xml

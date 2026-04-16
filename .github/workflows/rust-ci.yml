@@ -32,5 +32,8 @@ jobs:
       - name: Run tests
         run: cd rust-core && cargo test --all-features -- --test-threads=4
 
+      - name: Security audit
+        run: cd rust-core && cargo install cargo-audit && cargo audit || true
+
       - name: Build
         run: cd rust-core && cargo build --release
