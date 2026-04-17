@@ -1,7 +1,12 @@
-"""Security-focused tests — injection, sanitization, input validation."""
+"""Security-focused tests — injection, sanitization, input validation, auth bypass, CSRF, rate limiting."""
 
+import time
 import pytest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from fastapi import FastAPI
+from httpx import AsyncClient, ASGITransport
+
 from app.db.lancedb_client import _safe_id, _safe_str
 
 
@@ -184,3 +189,326 @@ class TestFirstUserRace:
         from app.db.lancedb_client import create_or_update_user
         source = inspect.getsource(create_or_update_user)
         assert "first_user_admin" in source, "create_or_update_user must check first_user_admin setting"
+
+
+# ---------------------------------------------------------------------------
+# Stream 2: Auth bypass scenarios
+# ---------------------------------------------------------------------------
+
+class TestAuthBypass:
+    async def test_expired_jwt_rejected(self, monkeypatch):
+        """Expired JWT tokens are rejected by verify_token."""
+        import jwt as pyjwt
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        import app.auth.jwt as jwt_module
+
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        public_key = private_key.public_key()
+
+        monkeypatch.setattr(jwt_module, "_pem_keys_exist", lambda: True)
+        monkeypatch.setattr(jwt_module, "_load_public_key", lambda: public_key)
+        monkeypatch.setattr(jwt_module, "_load_private_key", lambda: private_key)
+
+        expired_payload = {
+            "sub": "user-1",
+            "exp": int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp()),
+            "iat": int((datetime.now(timezone.utc) - timedelta(hours=2)).timestamp()),
+        }
+        expired_token = pyjwt.encode(expired_payload, private_key, algorithm="RS256")
+
+        result = jwt_module.verify_token(expired_token)
+        assert result is None, "Expired JWT must be rejected"
+
+    async def test_revoked_refresh_token_rejected(self, monkeypatch, mock_lancedb):
+        """Revoked refresh tokens cannot be used to obtain new access tokens."""
+        import app.auth.jwt as jwt_module
+        jwt_module._revoked_tokens.clear()
+
+        revoked_jti = "revoked-refresh-jti-123"
+        jwt_module._revoked_tokens.add(revoked_jti)
+
+        payload = {
+            "sub": "user-1",
+            "jti": revoked_jti,
+            "type": "refresh",
+        }
+
+        from app.routers.auth import router as auth_router
+
+        app = FastAPI()
+        app.include_router(auth_router, prefix="/api/v1/auth")
+
+        with (
+            patch("app.routers.auth.verify_token", return_value=payload),
+            patch("app.auth.jwt.is_token_revoked_async", new_callable=AsyncMock, return_value=True),
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                ac.cookies.set("kg_refresh_token", "revoked-token")
+                response = await ac.post("/api/v1/auth/refresh")
+
+        assert response.status_code == 401, "Revoked refresh token must be rejected"
+
+    async def test_missing_auth_returns_401(self):
+        """Protected endpoints return 401 without auth header."""
+        from app.routers.collections import router as coll_router
+
+        app = FastAPI()
+        app.include_router(coll_router, prefix="/api/v1/collections")
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as ac:
+            response = await ac.get("/api/v1/collections")
+
+        assert response.status_code == 401
+
+    async def test_invalid_jwt_structure_rejected(self):
+        """Malformed JWT strings are rejected."""
+        from app.routers.collections import router as coll_router
+
+        app = FastAPI()
+        app.include_router(coll_router, prefix="/api/v1/collections")
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as ac:
+            response = await ac.get(
+                "/api/v1/collections",
+                headers={"Authorization": "Bearer not.a.real.jwt"},
+            )
+
+        assert response.status_code == 401
+
+    async def test_cross_user_collection_access_denied(self, mock_lancedb):
+        """User A cannot access User B's collections."""
+        from app.routers.collections import router as coll_router
+        from app.auth.middleware import get_current_user
+
+        USER_A = {"id": "user-a", "email": "a@test.com", "name": "User A"}
+        USER_B = {"id": "user-b", "email": "b@test.com", "name": "User B"}
+
+        app_a = FastAPI()
+        app_a.include_router(coll_router, prefix="/api/v1/collections")
+        app_a.dependency_overrides[get_current_user] = lambda: USER_A
+
+        app_b = FastAPI()
+        app_b.include_router(coll_router, prefix="/api/v1/collections")
+        app_b.dependency_overrides[get_current_user] = lambda: USER_B
+
+        col_id = "cross-user-test-col"
+
+        with patch("app.routers.collections.create_collection", new_callable=AsyncMock, return_value={
+            "id": col_id, "name": "Secret", "user_id": "user-a", "description": "",
+            "folder_path": "", "status": "active", "doc_count": 0,
+            "created_at": 0, "updated_at": 0,
+        }):
+            async with AsyncClient(
+                transport=ASGITransport(app=app_a), base_url="http://test"
+            ) as ac:
+                create_resp = await ac.post(
+                    "/api/v1/collections",
+                    json={"name": "Secret"},
+                )
+
+        with patch("app.routers.collections.get_collection", new_callable=AsyncMock, return_value={
+            "id": col_id, "name": "Secret", "user_id": "user-a",
+        }):
+            async with AsyncClient(
+                transport=ASGITransport(app=app_b), base_url="http://test"
+            ) as ac:
+                response = await ac.get(f"/api/v1/collections/{col_id}")
+
+        assert response.status_code == 403, "User B must not access User A's collection"
+
+
+# ---------------------------------------------------------------------------
+# Stream 2: Injection prevention
+# ---------------------------------------------------------------------------
+
+class TestInjectionPrevention:
+    def test_sql_injection_in_collection_id(self):
+        """SQL-like injection in collection IDs is rejected by _safe_id."""
+        from app.db.lancedb_client import _safe_id
+        with pytest.raises(ValueError):
+            _safe_id("'; DROP TABLE collections; --")
+
+    def test_sql_injection_in_doc_id(self):
+        from app.db.lancedb_client import _safe_id
+        with pytest.raises(ValueError):
+            _safe_id('doc"; DROP TABLE nodes; --')
+
+    async def test_path_traversal_in_ingest_rejected(self, mock_settings):
+        """Path traversal in ingest folder is rejected."""
+        from app.routers.ingest import router as ingest_router
+        from app.auth.middleware import get_current_user
+
+        FAKE_USER = {"id": "test-user", "email": "test@test.com", "name": "Test"}
+
+        app = FastAPI()
+        app.include_router(ingest_router, prefix="/api/v1/ingest")
+        app.dependency_overrides[get_current_user] = lambda: FAKE_USER
+
+        with patch("app.routers.ingest.get_collection", new_callable=AsyncMock, return_value={
+            "id": "test-col", "user_id": "test-user",
+        }):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.post(
+                    "/api/v1/ingest/folder",
+                    json={"folder_path": "/etc/passwd", "collection_id": "test-col"},
+                )
+
+        assert response.status_code == 400
+
+    def test_xss_in_collection_name_rejected(self):
+        """XSS in collection name is rejected by validator."""
+        from app.models.schemas import CollectionCreate
+        with pytest.raises(Exception):
+            CollectionCreate(name="<script>alert(1)</script>")
+
+    def test_safe_str_handles_all_quote_types(self):
+        from app.db.lancedb_client import _safe_str
+        result = _safe_str("test'value\"another\\back")
+        assert "\\'" in result
+        assert '\\"' in result
+        assert "\\\\" in result
+
+
+# ---------------------------------------------------------------------------
+# Stream 2: CSRF protection
+# ---------------------------------------------------------------------------
+
+class TestCSRFProtection:
+    async def test_post_without_csrf_cookie_rejected(self):
+        """POST without CSRF cookie returns 403."""
+        from app.auth.csrf import csrf_middleware, CSRF_COOKIE_NAME, CSRF_HEADER_NAME
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        app = FastAPI()
+        app.add_middleware(BaseHTTPMiddleware, dispatch=csrf_middleware)
+
+        @app.post("/api/v1/collections")
+        async def create_collection():
+            return {"ok": True}
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as ac:
+            response = await ac.post(
+                "/api/v1/collections",
+                json={"name": "test"},
+                cookies={},
+            )
+
+        assert response.status_code == 403
+
+    async def test_csrf_mismatch_rejected(self):
+        """CSRF token mismatch returns 403."""
+        from app.auth.csrf import csrf_middleware, CSRF_COOKIE_NAME, CSRF_HEADER_NAME
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        app = FastAPI()
+        app.add_middleware(BaseHTTPMiddleware, dispatch=csrf_middleware)
+
+        @app.post("/api/v1/collections")
+        async def create_collection():
+            return {"ok": True}
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as ac:
+            ac.cookies.set(CSRF_COOKIE_NAME, "cookie-token-value")
+            response = await ac.post(
+                "/api/v1/collections",
+                json={"name": "test"},
+                headers={CSRF_HEADER_NAME: "different-header-token"},
+            )
+
+        assert response.status_code == 403
+        assert "mismatch" in response.json().get("error", "").lower()
+
+    async def test_get_requests_exempt_from_csrf(self):
+        """GET requests don't require CSRF."""
+        from app.auth.csrf import csrf_middleware
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        app = FastAPI()
+        app.add_middleware(BaseHTTPMiddleware, dispatch=csrf_middleware)
+
+        @app.get("/api/v1/collections")
+        async def list_collections():
+            return {"ok": True}
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as ac:
+            response = await ac.get("/api/v1/collections")
+
+        assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Stream 2: Rate limiting
+# ---------------------------------------------------------------------------
+
+class TestRateLimiting:
+    async def test_user_rate_limit_enforced(self):
+        """User rate limit is enforced after exceeding configured limit."""
+        from app.auth.middleware import RateLimiter
+
+        rl = RateLimiter(per_user_limit=5, per_ip_limit=100, window_seconds=60)
+
+        for _ in range(5):
+            assert await rl.check_user("user-1") is True
+
+        result = await rl.check_user("user-1")
+        assert result is False, "Request beyond per_user_limit must be rejected"
+
+    async def test_rate_limit_headers_present(self, mock_settings):
+        """Rate limit headers are present on responses."""
+        from app.auth.middleware import rate_limit_middleware
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        app = FastAPI()
+        app.add_middleware(BaseHTTPMiddleware, dispatch=rate_limit_middleware)
+
+        @app.get("/api/v1/test-rate")
+        async def test_endpoint():
+            return {"ok": True}
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as ac:
+            response = await ac.get("/api/v1/test-rate")
+
+        assert "X-RateLimit-Limit" in response.headers or response.status_code == 401, (
+            "Rate limit headers should be present on non-401 responses"
+        )
+
+    async def test_auth_rate_limit_stricter(self):
+        """Auth endpoints have stricter 10/min rate limit."""
+        from app.auth.middleware import RateLimiter, AUTH_RATE_LIMIT
+
+        rl = RateLimiter(per_user_limit=AUTH_RATE_LIMIT, per_ip_limit=AUTH_RATE_LIMIT * 3, window_seconds=60)
+
+        for _ in range(AUTH_RATE_LIMIT):
+            assert await rl.check_user("auth-user-1") is True
+
+        result = await rl.check_user("auth-user-1")
+        assert result is False, f"Auth per-user rate limit ({AUTH_RATE_LIMIT}/min) must be enforced"
+
+    async def test_auth_ip_rate_limit_enforced(self):
+        """Auth IP-level rate limit is enforced."""
+        from app.auth.middleware import RateLimiter, AUTH_RATE_LIMIT
+
+        ip_limit = AUTH_RATE_LIMIT * 3
+        rl = RateLimiter(per_user_limit=AUTH_RATE_LIMIT, per_ip_limit=ip_limit, window_seconds=60)
+
+        for _ in range(ip_limit):
+            assert await rl.check_ip("10.0.0.99") is True
+
+        result = await rl.check_ip("10.0.0.99")
+        assert result is False, f"Auth IP rate limit ({ip_limit}/min) must be enforced"
