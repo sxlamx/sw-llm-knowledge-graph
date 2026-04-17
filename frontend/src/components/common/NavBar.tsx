@@ -76,9 +76,7 @@ const NavBar: React.FC = () => {
                   alt={user.name}
                   sx={{ width: 32, height: 32, cursor: 'pointer' }}
                   onClick={() => navigate('/settings')}
-                  slotProps={{
-                    root: { 'aria-label': 'User settings' },
-                  }}
+                  aria-label="User settings"
                 />
               </Tooltip>
               <Button color="inherit" size="small" onClick={handleLogout}>

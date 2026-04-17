@@ -28,8 +28,7 @@ const mockDocuments = {
 
 const mockUseGetCollectionQuery = vi.fn();
 const mockUseListDocumentsQuery = vi.fn();
-const mockDeleteDocument = vi.fn(() => Promise.resolve(undefined));
-const mockUseDeleteDocumentMutation = () => [mockDeleteDocument, { isLoading: false }];
+const mockDeleteDocument = vi.fn();
 const mockUseTriggerNerPassMutation = vi.fn();
 
 vi.mock('../api/collectionsApi', () => ({
@@ -39,7 +38,7 @@ vi.mock('../api/collectionsApi', () => ({
 
 vi.mock('../api/documentsApi', () => ({
   useListDocumentsQuery: (...args: unknown[]) => mockUseListDocumentsQuery(...args),
-  useDeleteDocumentMutation: (...args: unknown[]) => mockUseDeleteDocumentMutation(...args),
+  useDeleteDocumentMutation: () => [mockDeleteDocument, { isLoading: false }],
 }));
 
 vi.mock('../components/ingest/IngestPanel', () => ({
@@ -65,7 +64,7 @@ describe('Collection', () => {
     mockUseGetCollectionQuery.mockReturnValue({ data: mockCollection, isLoading: false });
     mockDeleteDocument.mockReset();
     mockUseListDocumentsQuery.mockReturnValue({ data: mockDocuments, isLoading: false });
-    mockDeleteDocument.mockReturnValue({ unwrap: () => Promise.resolve(undefined) });
+    mockDeleteDocument.mockImplementation(() => ({ unwrap: () => Promise.resolve(undefined) }));
   });
 
   it('shows confirmation dialog before document deletion', async () => {

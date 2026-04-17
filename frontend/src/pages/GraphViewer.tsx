@@ -31,11 +31,13 @@ import BarChartIcon from '@mui/icons-material/BarChart';
 import BubbleChartIcon from '@mui/icons-material/BubbleChart';
 import LabelIcon from '@mui/icons-material/Label';
 import LabelOffIcon from '@mui/icons-material/LabelOff';
-import { useGetGraphDataQuery, useGetNerKeywordsQuery, GraphNode } from '../api/graphApi';
+import FileDownloadIcon from '@mui/icons-material/FileDownload';
+import { useGetGraphDataQuery, useGetNerKeywordsQuery, GraphNode, useLazyExportGraphQuery } from '../api/graphApi';
 import { useListCollectionsQuery } from '../api/collectionsApi';
 import { useListDocumentsQuery } from '../api/documentsApi';
 import { useGetPageRankQuery, useGetAnalyticsSummaryQuery, useGetClusterTopicsQuery } from '../api/analyticsApi';
 import { useAppDispatch, useAppSelector } from '../store';
+import { showSnackbar } from '../store/slices/uiSlice';
 import {
   setSelectedNode,
   setPathFinderMode,
@@ -153,15 +155,10 @@ const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ collectionId }) => {
 // NER keyword frequency panel
 // ---------------------------------------------------------------------------
 
-const NER_LABEL_COLORS: Record<string, string> = {
-  PERSON: '#4CAF50', ORGANIZATION: '#2196F3', LOCATION: '#FF9800',
-  DATE: '#9E9E9E', MONEY: '#795548', PERCENT: '#607D8B', LAW: '#E91E63',
-  LEGISLATION_TITLE: '#9C27B0', LEGISLATION_REFERENCE: '#673AB7',
-  STATUTE_SECTION: '#3F51B5', COURT_CASE: '#F44336', CASE_CITATION: '#B71C1C',
-  JURISDICTION: '#FF5722', LEGAL_CONCEPT: '#009688', DEFINED_TERM: '#00BCD4',
-  COURT: '#C62828', JUDGE: '#6A1B9A', LAWYER: '#1565C0',
-  PETITIONER: '#2E7D32', RESPONDENT: '#E65100', WITNESS: '#4E342E',
-};
+import { ENTITY_TYPE_COLORS } from '../utils/entityColors';
+
+// Use shared ENTITY_TYPE_COLORS for NER label colors in the keyword panel
+const NER_LABEL_COLORS = ENTITY_TYPE_COLORS;
 
 interface NerKeywordPanelProps {
   collectionId: string;
@@ -321,6 +318,7 @@ const GraphViewer: React.FC = () => {
   const [dateTo, setDateTo] = useState('');
   const [hoveredNode, setHoveredNode] = useState<GraphNode | null>(null);
   const tooltipRef = React.useRef<HTMLDivElement>(null);
+  const [exportGraph, { isLoading: isExporting }] = useLazyExportGraphQuery();
 
   const {
     selectedNodeId, pathFinderMode, depth, edgeTypeFilters, entityTypeFilters, nerLabelFilters,
@@ -444,6 +442,22 @@ const GraphViewer: React.FC = () => {
 
   const warningThreshold = (graphData?.total_nodes ?? 0) > 5000;
 
+  const handleExport = useCallback(async () => {
+    if (!selectedCollectionId) return;
+    try {
+      const result = await exportGraph({ collection_id: selectedCollectionId, format: 'graphml' }).unwrap();
+      const blob = new Blob([result], { type: 'application/xml' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `graph-${selectedCollectionId}.graphml`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      dispatch(showSnackbar({ message: 'Failed to export graph.', severity: 'error' }));
+    }
+  }, [selectedCollectionId, exportGraph, dispatch]);
+
   return (
     <Box sx={{ position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden', bgcolor: 'background.default' }}>
       {/* Top bar */}
@@ -501,6 +515,7 @@ const GraphViewer: React.FC = () => {
               <Typography variant="caption" color="text.secondary">From</Typography>
               <input
                 type="date"
+                aria-label="Date from"
                 value={dateFrom}
                 onChange={(e) => setDateFrom(e.target.value)}
                 style={{ fontSize: '0.75rem', padding: '2px 4px', borderRadius: 4, border: '1px solid #ccc' }}
@@ -508,6 +523,7 @@ const GraphViewer: React.FC = () => {
               <Typography variant="caption" color="text.secondary">To</Typography>
               <input
                 type="date"
+                aria-label="Date to"
                 value={dateTo}
                 onChange={(e) => setDateTo(e.target.value)}
                 style={{ fontSize: '0.75rem', padding: '2px 4px', borderRadius: 4, border: '1px solid #ccc' }}
@@ -578,6 +594,16 @@ const GraphViewer: React.FC = () => {
                   </IconButton>
                 </Tooltip>
               )}
+              <Tooltip title="Export graph">
+                <IconButton
+                  size="small"
+                  onClick={handleExport}
+                  disabled={isExporting || !selectedCollectionId}
+                  color="default"
+                >
+                  {isExporting ? <CircularProgress size={16} /> : <FileDownloadIcon />}
+                </IconButton>
+              </Tooltip>
             </Stack>
           )}
         </Toolbar>
@@ -723,6 +749,10 @@ const GraphViewer: React.FC = () => {
               nodeClusterLabels={nodeClusterLabels}
               showLabels={showLabels}
             />
+            {/* TODO: Web Worker for force simulation exists at src/workers/graphLayout.worker.ts
+                but react-force-graph-2d doesn't natively support external Web Workers.
+                For large graphs, consider replacing with custom canvas renderer + Web Worker.
+                cooldownTime and warmupTicks configured below to reduce main-thread blocking. */}
           </>
         )}
       </Box>

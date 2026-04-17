@@ -17,7 +17,7 @@ export default defineConfig({
         manualChunks: {
           vendor: ['react', 'react-dom', 'react-router-dom'],
           mui: ['@mui/material', '@mui/x-data-grid'],
-          graph: ['react-force-graph-2d', 'cytoscape'],
+          graph: ['react-force-graph-2d'],
           redux: ['@reduxjs/toolkit', 'react-redux'],
         },
       },
