@@ -6,7 +6,7 @@ import lancedb
 import pyarrow as pa
 from typing import Optional
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -569,6 +569,71 @@ async def bulk_update_chunk_ner_tags(
         return 0
 
 
+def _migrate_chunks_topic_columns(tbl) -> None:
+    """Add topic tracking columns to an existing chunks table if absent."""
+    schema_names = tbl.schema.names
+    if "topics" not in schema_names:
+        tbl.add_columns({"topics": "cast('' as string)"})
+    if "topic_version" not in schema_names:
+        tbl.add_columns({"topic_version": "cast(0 as int)"})
+    if "topic_extracted_at" not in schema_names:
+        tbl.add_columns({"topic_extracted_at": "cast(0 as bigint)"})
+
+
+async def bulk_update_chunk_topics(
+    collection_id: str,
+    updates: list[dict],  # each: {"id", "topics", "topic_version"}
+) -> int:
+    """Batch-update topic fields for many chunks in one merge_insert call."""
+    if not updates:
+        return 0
+    db = await get_lancedb()
+    table_name = f"{collection_id}_chunks"
+    now = int(datetime.now(timezone.utc).timestamp() * 1_000_000)
+    try:
+        tbl = db.open_table(table_name)
+        _migrate_chunks_topic_columns(tbl)
+
+        ids = [u["id"] for u in updates]
+        topics = [u["topics"] for u in updates]
+        versions = [u["topic_version"] for u in updates]
+        nows = [now] * len(updates)
+
+        batch = pa.table({
+            "id": pa.array(ids, type=pa.string()),
+            "topics": pa.array(topics, type=pa.string()),
+            "topic_version": pa.array(versions, type=pa.int32()),
+            "topic_extracted_at": pa.array(nows, type=pa.int64()),
+        })
+
+        (
+            tbl.merge_insert("id")
+            .when_matched_update_all()
+            .execute(batch)
+        )
+        return len(updates)
+    except Exception as e:
+        logger.warning(f"bulk_update_chunk_topics failed for {collection_id}: {e}")
+        return 0
+
+
+async def get_outdated_topic_chunks(collection_id: str, current_version: int) -> list[dict]:
+    """Return chunks whose topic_version is below current_version (includes unextracted chunks at v0)."""
+    db = await get_lancedb()
+    try:
+        tbl = db.open_table(f"{collection_id}_chunks")
+        _migrate_chunks_topic_columns(tbl)
+        return (
+            tbl.search()
+            .where(f"topic_version < {current_version}", prefilter=True)
+            .select(["id", "text", "embedding", "contextual_text"])
+            .limit(1_000_000)
+            .to_list()
+        )
+    except Exception:
+        return []
+
+
 async def get_outdated_ner_chunks(collection_id: str, current_version: int) -> list[dict]:
     """Return chunks whose ner_version is below current_version (includes untagged chunks at v0)."""
     db = await get_lancedb()
@@ -851,6 +916,46 @@ async def upsert_topic(collection_id: str, topic: dict) -> None:
         db.create_table(table_name, data=[topic], exist_ok=True)
         return
     tbl.add([topic])
+
+
+async def upsert_topics(collection_id: str, topics: list[dict]) -> int:
+    """Batch upsert topics into the {collection_id}_topics table using merge_insert on id.
+
+    Returns the number of topics written.
+    """
+    if not topics:
+        return 0
+    db = await get_lancedb()
+    table_name = f"{collection_id}_topics"
+    try:
+        tbl = db.open_table(table_name)
+    except Exception:
+        db.create_table(table_name, data=topics, exist_ok=True)
+        return len(topics)
+
+    cols = set(topics[0].keys())
+    arrays: dict[str, pa.Array] = {}
+    for col in cols:
+        values = [t.get(col) for t in topics]
+        # Infer a reasonable type for known columns; otherwise let pyarrow infer.
+        if col in {"frequency", "node_count", "chunk_count"}:
+            arrays[col] = pa.array([int(v or 0) for v in values], type=pa.int32())
+        elif col == "score":
+            arrays[col] = pa.array([float(v or 0.0) for v in values], type=pa.float32())
+        elif col in {"keywords"}:
+            arrays[col] = pa.array([list(v) if v else [] for v in values], type=pa.list_(pa.string()))
+        elif col in {"embedding"}:
+            arrays[col] = pa.array([list(v) if v else [] for v in values], type=pa.list_(pa.float32()))
+        else:
+            arrays[col] = pa.array([str(v) if v is not None else "" for v in values], type=pa.string())
+
+    batch = pa.table(arrays)
+    (
+        tbl.merge_insert("id")
+        .when_matched_update_all()
+        .execute(batch)
+    )
+    return len(topics)
 
 
 async def list_topics(collection_id: str) -> list[dict]:

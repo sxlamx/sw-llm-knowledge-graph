@@ -57,6 +57,7 @@ def mock_settings(monkeypatch):
     monkeypatch.setattr("app.routers.auth.settings", test_settings)
     monkeypatch.setattr("app.llm.embedder.settings", test_settings)
     monkeypatch.setattr("app.pipeline.ingest_worker.settings", test_settings)
+    monkeypatch.setattr("app.pipeline.topic_worker.settings", test_settings)
     return test_settings
 
 

@@ -257,6 +257,7 @@ class TopicResponse(BaseModel):
     name: str
     node_count: int = 0
     chunk_count: int = 0
+    keywords: list[str] = Field(default_factory=list)
 
 
 class TopicListResponse(BaseModel):

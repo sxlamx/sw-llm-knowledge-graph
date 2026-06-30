@@ -12,6 +12,7 @@ These tests verify:
 import pytest
 import uuid
 import asyncio
+import json
 from unittest.mock import AsyncMock, patch, MagicMock
 from fastapi import FastAPI
 from httpx import AsyncClient, ASGITransport
@@ -51,7 +52,13 @@ class TestStartIngestJob:
                 return_value={"id": "col-1", "user_id": FAKE_USER["id"]},
             ),
             patch("app.routers.ingest.validate_folder_path", return_value=MagicMock()),
-            patch("app.routers.ingest.create_ingest_job", new_callable=AsyncMock),
+            patch(
+                "app.routers.ingest.create_ingest_job",
+                new_callable=AsyncMock,
+                side_effect=lambda job_data: job_data.setdefault(
+                    "created_at", 1_000_000_000_000_000
+                ),
+            ),
             patch("app.routers.ingest.get_job_manager", return_value=MagicMock()),
         ):
             async with AsyncClient(
@@ -110,7 +117,13 @@ class TestStartIngestJob:
                 return_value={"id": "col-1", "user_id": FAKE_USER["id"]},
             ),
             patch("app.routers.ingest.validate_folder_path", return_value=MagicMock()),
-            patch("app.routers.ingest.create_ingest_job", new_callable=AsyncMock),
+            patch(
+                "app.routers.ingest.create_ingest_job",
+                new_callable=AsyncMock,
+                side_effect=lambda job_data: job_data.setdefault(
+                    "created_at", 1_000_000_000_000_000
+                ),
+            ),
             patch("app.routers.ingest.get_job_manager", return_value=MagicMock()),
         ):
             async with AsyncClient(
@@ -224,7 +237,7 @@ class TestContextualPrefixGate:
             lambda: MagicMock(emit=MagicMock()),
         )
         monkeypatch.setattr(
-            "app.pipeline.ingest_worker.get_index_manager",
+            "app.core.rust_bridge.get_index_manager",
             lambda: None,
         )
 
@@ -233,7 +246,7 @@ class TestContextualPrefixGate:
         mock_engine.scan_folder.return_value = '[]'  # no files
 
         monkeypatch.setattr(
-            "app.pipeline.ingest_worker.get_ingestion_engine",
+            "app.core.rust_bridge.get_ingestion_engine",
             lambda: mock_engine,
         )
 
@@ -287,7 +300,7 @@ class TestContextualPrefixGate:
             lambda: MagicMock(emit=MagicMock()),
         )
         monkeypatch.setattr(
-            "app.pipeline.ingest_worker.get_index_manager",
+            "app.core.rust_bridge.get_index_manager",
             lambda: None,
         )
 
@@ -295,7 +308,7 @@ class TestContextualPrefixGate:
         mock_engine.scan_folder.return_value = '[]'
 
         monkeypatch.setattr(
-            "app.pipeline.ingest_worker.get_ingestion_engine",
+            "app.core.rust_bridge.get_ingestion_engine",
             lambda: mock_engine,
         )
 
@@ -354,10 +367,10 @@ class TestFileDeduplication:
         )
         monkeypatch.setattr(
             "app.pipeline.ingest_worker.get_job_manager",
-            lambda: MagicMock(emit=MagicMock(), is_cancelled=lambda jid: False),
+            lambda: MagicMock(emit=MagicMock(), is_cancelled=AsyncMock(return_value=False)),
         )
         monkeypatch.setattr(
-            "app.pipeline.ingest_worker.get_index_manager",
+            "app.core.rust_bridge.get_index_manager",
             lambda: None,
         )
 
@@ -373,11 +386,10 @@ class TestFileDeduplication:
         mock_engine.chunk_text.return_value = '[]'
 
         monkeypatch.setattr(
-            "app.pipeline.ingest_worker.get_ingestion_engine",
+            "app.core.rust_bridge.get_ingestion_engine",
             lambda: mock_engine,
         )
 
-        import json
         from app.models.schemas import IngestOptions
 
         await worker.run_ingest_pipeline(
@@ -442,7 +454,7 @@ class TestNERPass:
             lambda: MagicMock(emit=MagicMock()),
         )
         monkeypatch.setattr(
-            "app.pipeline.ingest_worker.get_index_manager",
+            "app.core.rust_bridge.get_index_manager",
             lambda: None,
         )
 
@@ -450,7 +462,7 @@ class TestNERPass:
         mock_engine.scan_folder.return_value = '[]'
 
         monkeypatch.setattr(
-            "app.pipeline.ingest_worker.get_ingestion_engine",
+            "app.core.rust_bridge.get_ingestion_engine",
             lambda: mock_engine,
         )
 
@@ -491,11 +503,11 @@ class TestJobProgress:
         )
         monkeypatch.setattr(
             "app.pipeline.ingest_worker._file_already_indexed",
-            lambda cid, path: False,
+            AsyncMock(return_value=False),
         )
         monkeypatch.setattr(
             "app.pipeline.ingest_worker.extract_text_smart",
-            lambda *args, **kwargs: {"raw_text": "test content", "pages": []},
+            AsyncMock(return_value={"raw_text": "test content", "pages": []}),
         )
         monkeypatch.setattr(
             "app.pipeline.ingest_worker.embed_texts",
@@ -507,10 +519,10 @@ class TestJobProgress:
         )
         monkeypatch.setattr(
             "app.pipeline.ingest_worker.get_job_manager",
-            lambda: MagicMock(emit=MagicMock(), is_cancelled=lambda jid: False),
+            lambda: MagicMock(emit=MagicMock(), is_cancelled=AsyncMock(return_value=False)),
         )
         monkeypatch.setattr(
-            "app.pipeline.ingest_worker.get_index_manager",
+            "app.core.rust_bridge.get_index_manager",
             lambda: None,
         )
 
@@ -523,11 +535,10 @@ class TestJobProgress:
         mock_engine.chunk_text.return_value = '[]'
 
         monkeypatch.setattr(
-            "app.pipeline.ingest_worker.get_ingestion_engine",
+            "app.core.rust_bridge.get_ingestion_engine",
             lambda: mock_engine,
         )
 
-        import json
         from app.models.schemas import IngestOptions
 
         await worker.run_ingest_pipeline(
@@ -585,7 +596,7 @@ class TestJobCancellation:
             AsyncMock(),
         )
         monkeypatch.setattr(
-            "app.pipeline.ingest_worker.get_index_manager",
+            "app.core.rust_bridge.get_index_manager",
             lambda: None,
         )
 
@@ -594,11 +605,10 @@ class TestJobCancellation:
         mock_engine.scan_folder.return_value = json.dumps(entries)
 
         monkeypatch.setattr(
-            "app.pipeline.ingest_worker.get_ingestion_engine",
+            "app.core.rust_bridge.get_ingestion_engine",
             lambda: mock_engine,
         )
 
-        import json
         from app.models.schemas import IngestOptions
 
         await worker.run_ingest_pipeline(
