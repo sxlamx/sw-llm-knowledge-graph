@@ -8,7 +8,13 @@ name = "rust_core"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["auto-initialize"] }
+pyo3 = { version = "0.22", features = ["extension-module"] }
+lancedb = "0.27.2"
+arrow = "57"
+arrow-array = "57"
+arrow-buffer = "57"
+arrow-schema = "57"
+arrow-select = "57"
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 rayon = "1"
@@ -44,9 +50,10 @@ chrono = { version = "0.4", features = ["serde"] }
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
-rand = "0.8"
+rand = { version = "0.8", features = ["small_rng"] }
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 futures = "0.3"
+serde_json = "1"
 
 [[bench]]
 name = "search_bench"
@@ -54,6 +61,10 @@ harness = false
 
 [[bench]]
 name = "index_bench"
+harness = false
+
+[[bench]]
+name = "concurrent_search_bench"
 harness = false
 
 [profile.release]

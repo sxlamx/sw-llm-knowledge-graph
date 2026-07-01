@@ -28,6 +28,9 @@ fn make_node(label: &str, node_type: NodeType, cid: Uuid) -> GraphNode {
         ontology_class: None,
         properties: HashMap::new(),
         collection_id: cid,
+        display_label: None,
+        dedup_key: None,
+        doc_origins: vec![],
         created_at: None,
         updated_at: None,
     }
@@ -44,6 +47,13 @@ fn make_edge(source: Uuid, target: Uuid, edge_type: EdgeType, weight: f32, cid: 
         chunk_id: None,
         properties: HashMap::new(),
         collection_id: cid,
+        display_label: None,
+        dedup_key: None,
+        predicate: String::new(),
+        time: None,
+        location: None,
+        participants: None,
+        doc_origins: vec![],
     }
 }
 

@@ -1,0 +1,24 @@
+name: list
+type: list
+language:
+  - en
+domain: general
+description: "Ordered list extraction — extracts sequenced items with position and optional category"
+entity_schema:
+  fields:
+    - name: item
+      type: string
+      description: "The item text or description"
+      required: true
+    - name: category
+      type: string
+      description: "Optional grouping category for the item"
+      required: false
+  key: "{item}"
+  display_label: "{item}"
+extraction:
+  mode: one_stage
+  method: standard
+  node_prompt_extra: "Extract each distinct item as a separate entity. Preserve the original ordering."
+  merge_strategy_nodes: exact
+  merge_strategy_edges: exact

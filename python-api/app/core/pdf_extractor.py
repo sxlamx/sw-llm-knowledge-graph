@@ -86,7 +86,7 @@ async def extract_text_smart(
     if file_type.lower() in ("pdf",) and Path(file_path).suffix.lower() == ".pdf":
         # Try pymupdf first
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             doc_data = await loop.run_in_executor(None, extract_pdf_pymupdf, file_path)
             raw_text = doc_data.get("raw_text", "")
 
@@ -108,7 +108,7 @@ async def extract_text_smart(
     if engine is None:
         raise RuntimeError("No extraction engine available")
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     extracted_json = await loop.run_in_executor(
         None,
         lambda: engine.extract_text(file_path, file_type),

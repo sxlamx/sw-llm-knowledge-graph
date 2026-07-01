@@ -5,15 +5,12 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth.middleware import get_current_user
-from app.db.lancedb_client import get_collection, get_ontology, upsert_ontology
+from app.db.lancedb_client import get_collection, get_ontology, upsert_ontology, list_ontology_versions
 from app.models.schemas import (
     OntologyResponse, UpdateOntologyRequest, GenerateOntologyRequest,
-    EntityTypeDef, RelationTypeDef,
+    OntologyGenerateResponse, EntityTypeDef, RelationTypeDef,
 )
-from app.config import get_settings
-
 router = APIRouter()
-settings = get_settings()
 logger = logging.getLogger(__name__)
 
 _DEFAULT_ENTITY_TYPES = {
@@ -125,15 +122,15 @@ async def update_ontology_endpoint(
     return _row_to_ontology(row)
 
 
-@router.post("/generate", response_model=OntologyResponse)
+@router.post("/generate", response_model=OntologyGenerateResponse)
 async def generate_ontology_endpoint(
     body: GenerateOntologyRequest,
     current_user: dict = Depends(get_current_user),
 ):
     await _require_access(body.collection_id, current_user)
 
-    import httpx
     from app.db.lancedb_client import get_lancedb
+    from app.llm.ollama_client import call_ollama_cloud, OllamaCloudError
 
     # Gather sample texts from the collection's chunks
     db = await get_lancedb()
@@ -146,18 +143,15 @@ async def generate_ontology_endpoint(
         pass
 
     if not sample_texts:
-        # Nothing to generate from — return defaults
-        default_row = {
-            "collection_id": body.collection_id,
-            "version": 1,
-            "entity_types": json.dumps({k: v.model_dump() for k, v in _DEFAULT_ENTITY_TYPES.items()}),
-            "relationship_types": json.dumps({k: v.model_dump() for k, v in _DEFAULT_RELATION_TYPES.items()}),
-        }
-        await upsert_ontology(default_row)
-        return _row_to_ontology(default_row)
+        proposal = OntologyResponse(
+            collection_id=body.collection_id,
+            entity_types=_DEFAULT_ENTITY_TYPES,
+            relationship_types=_DEFAULT_RELATION_TYPES,
+        )
+        return OntologyGenerateResponse(proposal=proposal)
 
     sample = "\n---\n".join(sample_texts[:10])
-    prompt = f"""You are an ontology engineer. Analyse these document excerpts and suggest a domain-specific knowledge graph ontology.
+    user_prompt = f"""Analyse these document excerpts and suggest a domain-specific knowledge graph ontology.
 
 EXCERPTS:
 {sample[:4000]}
@@ -178,39 +172,91 @@ Include 5-10 entity types and 5-10 relationship types relevant to the domain abo
     generated_rt = {k: v.model_dump() for k, v in _DEFAULT_RELATION_TYPES.items()}
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
-            resp = await client.post(
-                f"{settings.ollama_cloud_base_url}/chat/completions",
-                json={
-                    "model": settings.ollama_cloud_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.2,
-                    "max_tokens": 1500,
-                },
-                headers={"Authorization": f"Bearer {settings.ollama_cloud_api_key}"},
-            )
-            resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"].strip()
-            if content.startswith("```"):
-                content = content.split("```")[1]
-                if content.startswith("json"):
-                    content = content[4:]
-            parsed = json.loads(content)
-            if "entity_types" in parsed:
-                generated_et.update(parsed["entity_types"])
-            if "relationship_types" in parsed:
-                generated_rt.update(parsed["relationship_types"])
-    except Exception as e:
+        response = await call_ollama_cloud(
+            system_prompt="You are an ontology engineer.",
+            user_prompt=user_prompt,
+            temperature=0.2,
+            max_tokens=1500,
+        )
+        content = response["content"]
+        parsed = json.loads(content)
+        if "entity_types" in parsed:
+            generated_et.update(parsed["entity_types"])
+        if "relationship_types" in parsed:
+            generated_rt.update(parsed["relationship_types"])
+    except (OllamaCloudError, json.JSONDecodeError) as e:
         logger.warning(f"Ontology generation LLM call failed: {e}")
 
-    existing = await get_ontology(body.collection_id)
-    version = (existing.get("version", 0) if existing else 0) + 1
+    et_defs = {}
+    for k, v in generated_et.items():
+        et_defs[k] = EntityTypeDef(**v) if isinstance(v, dict) else EntityTypeDef()
+    rt_defs = {}
+    for k, v in generated_rt.items():
+        rt_defs[k] = RelationTypeDef(**v) if isinstance(v, dict) else RelationTypeDef(domain=[], range=[])
 
-    row = {
-        "collection_id": body.collection_id,
-        "version": version,
-        "entity_types": json.dumps(generated_et),
-        "relationship_types": json.dumps(generated_rt),
-    }
-    await upsert_ontology(row)
-    return _row_to_ontology(row)
+    proposal = OntologyResponse(
+        collection_id=body.collection_id,
+        entity_types=et_defs,
+        relationship_types=rt_defs,
+    )
+    return OntologyGenerateResponse(proposal=proposal)
+
+
+@router.get("/versions")
+async def list_ontology_versions_endpoint(
+    collection_id: str = Query(...),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_user: dict = Depends(get_current_user),
+):
+    await _require_access(collection_id, current_user)
+    rows = await list_ontology_versions(collection_id, limit=limit, offset=offset)
+    versions = []
+    for row in rows:
+        versions.append({
+            "version": row.get("version", 1),
+            "updated_at": row.get("updated_at"),
+        })
+    return {"collection_id": collection_id, "versions": versions, "total": len(rows)}
+
+
+@router.post("/validate")
+async def validate_ontology_endpoint(
+    collection_id: str = Query(...),
+    entities: list[str] = Query(default=[]),
+    relationships: list[str] = Query(default=[]),
+    current_user: dict = Depends(get_current_user),
+):
+    await _require_access(collection_id, current_user)
+    row = await get_ontology(collection_id)
+    if not row:
+        return {"valid": True, "warnings": [], "errors": ["No active ontology found"]}
+
+    et_data = {}
+    rt_data = {}
+    try:
+        et_raw = row.get("entity_types")
+        et_data = json.loads(et_raw) if isinstance(et_raw, str) else (et_raw or {})
+    except Exception:
+        pass
+    try:
+        rt_raw = row.get("relationship_types")
+        rt_data = json.loads(rt_raw) if isinstance(rt_raw, str) else (rt_raw or {})
+    except Exception:
+        pass
+
+    known_entities = set(et_data.keys())
+    known_relations = set(rt_data.keys())
+
+    warnings = []
+    errors = []
+
+    for entity in entities:
+        if entity not in known_entities:
+            warnings.append(f"Unknown entity type: {entity}")
+
+    for rel in relationships:
+        if rel not in known_relations:
+            errors.append(f"Unknown relationship type: {rel}")
+
+    return {"valid": len(errors) == 0, "warnings": warnings, "errors": errors}

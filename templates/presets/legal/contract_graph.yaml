@@ -1,0 +1,56 @@
+name: contract_graph
+type: graph
+language:
+  - en
+domain: legal
+description: "Contract knowledge graph — parties, obligations, rights, and clauses"
+entity_schema:
+  fields:
+    - name: name
+      type: string
+      description: "The canonical name of the contract entity"
+      required: true
+    - name: entity_type
+      type: string
+      description: "Type: party, obligation, right, clause, asset"
+      required: true
+    - name: description
+      type: string
+      description: "Brief description of the contract entity"
+      required: false
+  key: "{name}"
+  display_label: "{name} ({entity_type})"
+relation_schema:
+  fields:
+    - name: source
+      type: string
+      description: "The source contract entity"
+      required: true
+    - name: target
+      type: string
+      description: "The target contract entity"
+      required: true
+    - name: predicate
+      type: string
+      description: "Relationship: owes, provides, governs, terminates, assigned_to"
+      required: true
+    - name: context
+      type: string
+      description: "Surrounding text context for the contractual relationship"
+      required: false
+  key: "{source}|{predicate}|{target}"
+  source_field: source
+  target_field: target
+  display_label: "{predicate}"
+extraction:
+  mode: two_stage
+  method: two_stage
+  node_prompt_extra: "Extract contract entities: parties, obligations, rights, clauses, and assets. Identify the role each party plays (buyer, seller, licensor, licensee). Preserve exact section and clause numbers."
+  edge_prompt_extra: "Only extract explicitly stated contractual relationships. Use standard predicates: owes, provides, governs, terminates, assigned_to. Do not infer obligations that are not explicitly stated."
+  merge_strategy_nodes: llm_prefer_first
+  merge_strategy_edges: keep_first
+identifiers:
+  entity_key: "{name}"
+  relation_key: "{source}|{predicate}|{target}"
+  relation_source: source
+  relation_target: target

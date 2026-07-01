@@ -82,13 +82,13 @@ describe('ResultCard', () => {
     expect(screen.getByText('Untitled')).toBeInTheDocument();
   });
 
-  it('shows highlights instead of plain text when present', () => {
+  it('shows highlights as mark elements when present', () => {
     const result: SearchResultItem = {
       ...baseResult,
-      highlights: ['<mark>Hello</mark> world'],
+      text: 'Hello world chunk text.',
+      highlights: ['Hello'],
     };
     render(<ResultCard result={result} />);
-    // dangerouslySetInnerHTML renders the HTML
     const mark = document.querySelector('mark');
     expect(mark).not.toBeNull();
     expect(mark?.textContent).toBe('Hello');

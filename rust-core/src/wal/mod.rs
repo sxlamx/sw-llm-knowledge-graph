@@ -1,4 +1,4 @@
-//! WAL module (stub for Phase 1).
+//! WAL module — write-ahead log for crash recovery.
 
 pub mod writer;
 pub mod recovery;

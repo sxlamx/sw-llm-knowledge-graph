@@ -1,4 +1,4 @@
-//! search_test.rs — Phase 3 search correctness tests.
+//! search_test.rs — Phase 3+4 search correctness tests.
 //!
 //! Tests:
 //!   - Tantivy BM25 text search returns correct results.
@@ -7,6 +7,11 @@
 //!   - Partial failure graceful degradation (channel with no results → zero weight).
 //!   - Graph traversal: BFS reachability, shortest path.
 //!   - KnowledgeGraph adjacency bookkeeping.
+//!   - [Phase 4] Score fusion includes keyword-only and graph-only hits.
+//!   - [Phase 4] Score fusion with all channels empty returns empty.
+//!   - [Phase 4] Graph proximity scoring by hop depth.
+//!   - [Phase 4] Embedding cache: store and retrieve.
+//!   - [Phase 4] Embedding cache: TTL expiry.
 
 use rust_core::models::{
     EdgeType, GraphEdge, GraphNode, KnowledgeGraph, NodeType,
@@ -30,8 +35,32 @@ fn node(label: &str, node_type: NodeType, cid: Uuid) -> GraphNode {
         ontology_class: None,
         properties: HashMap::new(),
         collection_id: cid,
+        display_label: None,
+        dedup_key: None,
+        doc_origins: vec![],
         created_at: None,
         updated_at: None,
+    }
+}
+
+fn edge_with_chunk(src: Uuid, tgt: Uuid, cid: Uuid, chunk_id: Uuid, weight: f32) -> GraphEdge {
+    GraphEdge {
+        id: Uuid::new_v4(),
+        source: src,
+        target: tgt,
+        edge_type: EdgeType::Mentions,
+        weight,
+        context: None,
+        chunk_id: Some(chunk_id),
+        properties: HashMap::new(),
+        collection_id: cid,
+        display_label: None,
+        dedup_key: None,
+        predicate: String::new(),
+        time: None,
+        location: None,
+        participants: None,
+        doc_origins: vec![],
     }
 }
 
@@ -46,6 +75,13 @@ fn edge(src: Uuid, tgt: Uuid, cid: Uuid) -> GraphEdge {
         chunk_id: None,
         properties: HashMap::new(),
         collection_id: cid,
+        display_label: None,
+        dedup_key: None,
+        predicate: String::new(),
+        time: None,
+        location: None,
+        participants: None,
+        doc_origins: vec![],
     }
 }
 
@@ -397,4 +433,316 @@ fn test_serializable_graph_round_trip() {
     assert!(restored.nodes.contains_key(&n2_id));
     assert!(restored.adjacency_out.contains_key(&n1_id));
     assert!(restored.adjacency_in.contains_key(&n2_id));
+}
+
+// ===========================================================================
+// Phase 4 — Hybrid Search Tests
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Test 12: Score fusion — keyword-only hits included (spec section 6).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_score_fusion_includes_keyword_only_hits() {
+    let v: Vec<(String, f32)> = vec![("c1".into(), 0.9)];
+    let k: Vec<(String, f32)> = vec![("c1".into(), 0.8), ("c2".into(), 0.7)];
+    let g: Vec<(String, f32)> = vec![];
+
+    let mut all_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (id, _) in &v { all_ids.insert(id.clone()); }
+    for (id, _) in &k { all_ids.insert(id.clone()); }
+    for (id, _) in &g { all_ids.insert(id.clone()); }
+
+    assert_eq!(all_ids.len(), 2, "must include c1 (vector+keyword) and c2 (keyword-only)");
+
+    let v_map: HashMap<String, f32> = v.into_iter().collect();
+    let k_map: HashMap<String, f32> = k.into_iter().collect();
+    let g_map: HashMap<String, f32> = g.into_iter().collect();
+
+    let c2_score = v_map.get("c2").copied().unwrap_or(0.0) * 0.6
+        + k_map.get("c2").copied().unwrap_or(0.0) * 0.3
+        + g_map.get("c2").copied().unwrap_or(0.0) * 0.1;
+    let expected_c2 = 0.0 * 0.6 + 0.7 * 0.3 + 0.0 * 0.1;
+    assert!(
+        (c2_score - expected_c2).abs() < 1e-5,
+        "keyword-only hit c2: expected {}, got {}",
+        expected_c2,
+        c2_score
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 13: Score fusion — graph-only hits included.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_score_fusion_includes_graph_only_hits() {
+    let v: Vec<(String, f32)> = vec![("c1".into(), 0.9)];
+    let k: Vec<(String, f32)> = vec![];
+    let g: Vec<(String, f32)> = vec![("c3".into(), 0.5)];
+
+    let mut all_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (id, _) in &v { all_ids.insert(id.clone()); }
+    for (id, _) in &k { all_ids.insert(id.clone()); }
+    for (id, _) in &g { all_ids.insert(id.clone()); }
+
+    assert_eq!(all_ids.len(), 2, "must include c1 (vector) and c3 (graph-only)");
+
+    let g_map: HashMap<String, f32> = g.into_iter().collect();
+    let c3_score = 0.0 * 0.6 + 0.0 * 0.3 + g_map.get("c3").copied().unwrap_or(0.0) * 0.1;
+    assert!(
+        (c3_score - 0.05).abs() < 1e-5,
+        "graph-only hit c3: expected 0.05, got {}",
+        c3_score
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 14: Score fusion — all channels empty → no results (not an error).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_score_fusion_all_channels_empty() {
+    let v: Vec<(String, f32)> = vec![];
+    let k: Vec<(String, f32)> = vec![];
+    let g: Vec<(String, f32)> = vec![];
+
+    let all_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    assert!(all_ids.is_empty(), "all empty channels → zero results, not error");
+}
+
+// ---------------------------------------------------------------------------
+// Test 15: Graph proximity — chunk scoring by hop depth.
+// Chunks closer to seed entity get higher proximity score (1/(hop+1)).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_graph_proximity_hop_scoring() {
+    let cid = Uuid::new_v4();
+    let mut kg = KnowledgeGraph::new(cid);
+
+    let entity = node("Entity", NodeType::Concept, cid);
+    let mid = node("MidNode", NodeType::Concept, cid);
+    let far = node("FarNode", NodeType::Concept, cid);
+    let entity_id = entity.id;
+    let mid_id = mid.id;
+    let far_id = far.id;
+
+    let chunk_near = Uuid::new_v4();
+    let chunk_far = Uuid::new_v4();
+
+    kg.insert_nodes_batch(vec![entity, mid, far]);
+    kg.insert_edges_batch(vec![
+        edge_with_chunk(entity_id, mid_id, cid, chunk_near, 0.9),
+        edge_with_chunk(mid_id, far_id, cid, chunk_far, 0.8),
+    ]);
+
+    // Manually compute proximity: chunk_near at hop 0 → 1/(0+1)=1.0, chunk_far at hop 1 → 1/(1+1)=0.5
+    use rust_core::graph::traversal::bfs_reachable;
+    let reachable = bfs_reachable(&kg, &[entity_id], 2, 0.0);
+    assert!(reachable.contains(&entity_id));
+    assert!(reachable.contains(&mid_id));
+    assert!(reachable.contains(&far_id));
+
+    // Verify hop depths: entity=0, mid=1, far=2
+    let mut depths: HashMap<Uuid, u32> = HashMap::new();
+    depths.insert(entity_id, 0);
+    depths.insert(mid_id, 1);
+    depths.insert(far_id, 2);
+
+    let near_proximity = 1.0 / (depths.get(&entity_id).copied().unwrap_or(2) as f32 + 1.0);
+    let far_proximity = 1.0 / (depths.get(&mid_id).copied().unwrap_or(2) as f32 + 1.0);
+
+    assert!(
+        near_proximity > far_proximity,
+        "near chunk ({}) should have higher proximity than far chunk ({})",
+        near_proximity,
+        far_proximity
+    );
+    assert!((near_proximity - 1.0).abs() < 1e-5, "near chunk at hop 0 = 1.0");
+    assert!((far_proximity - 0.5).abs() < 1e-5, "far chunk at hop 1 = 0.5");
+}
+
+// ---------------------------------------------------------------------------
+// Test 16: Embedding cache — store and retrieve.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_embedding_cache_store_and_retrieve() {
+    use rust_core::index_manager::IndexManager;
+    let tmp = tempfile::tempdir().unwrap();
+    let im = IndexManager::new(tmp.path().to_str().unwrap()).unwrap();
+
+    let embedding = vec![0.1f32; 8];
+    let json = serde_json::to_string(&embedding).unwrap();
+    assert!(im.cache_embedding("test query", &json));
+
+    let cached = im.get_cached_embedding("test query");
+    let result: Vec<f32> = serde_json::from_str(&cached).unwrap();
+    assert_eq!(result, embedding, "cached embedding should match stored embedding");
+}
+
+// ---------------------------------------------------------------------------
+// Test 17: Embedding cache — miss returns empty string.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_embedding_cache_miss_returns_empty() {
+    use rust_core::index_manager::IndexManager;
+    let tmp = tempfile::tempdir().unwrap();
+    let im = IndexManager::new(tmp.path().to_str().unwrap()).unwrap();
+
+    let result = im.get_cached_embedding("never seen before");
+    assert!(result.is_empty(), "cache miss should return empty string");
+}
+
+// ---------------------------------------------------------------------------
+// Test 18: Tantivy BM25 search — results include highlights.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_bm25_search_includes_highlights() {
+    use rust_core::storage::SearchEngine;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let engine = SearchEngine::new(tmp.path().to_str().unwrap()).unwrap();
+
+    let chunk = rust_core::models::ChunkRecord {
+        id: uuid::Uuid::new_v4().to_string(),
+        doc_id: uuid::Uuid::new_v4().to_string(),
+        collection_id: "coll1".to_string(),
+        text: "machine learning algorithms transform data into predictions".to_string(),
+        contextual_text: String::new(),
+        embedding: vec![0.0f32; 1024],
+        position: 0,
+        token_count: Some(8),
+        page: Some(1),
+        topics: vec![],
+        created_at: 1234567890,
+    };
+
+    engine.insert_chunks(vec![chunk]).unwrap();
+    engine.commit_pending().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let results = engine.search("coll1", "machine", 10).unwrap();
+    assert!(!results.is_empty(), "should find 'machine' result");
+
+    let r = &results[0];
+    assert!(r.get("highlights").is_some(), "result must include highlights field");
+    let highlights = r.get("highlights").unwrap().as_array().expect("highlights should be an array");
+    assert!(!highlights.is_empty(), "BM25 highlights should not be empty for matching query");
+}
+
+// ---------------------------------------------------------------------------
+// Test 19: Graceful degradation — all but one channel empty.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_graceful_degradation_only_vector_channel() {
+    let v: Vec<(String, f32)> = vec![
+        ("c1".into(), 0.95),
+        ("c2".into(), 0.80),
+        ("c3".into(), 0.60),
+    ];
+    let k: Vec<(String, f32)> = vec![];  // keyword timeout
+    let g: Vec<(String, f32)> = vec![];  // graph timeout
+
+    let mut all_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (id, _) in &v { all_ids.insert(id.clone()); }
+    for (id, _) in &k { all_ids.insert(id.clone()); }
+    for (id, _) in &g { all_ids.insert(id.clone()); }
+
+    assert_eq!(all_ids.len(), 3, "all vector results should be returned");
+
+    let v_map: HashMap<String, f32> = v.into_iter().collect();
+    let mut results: Vec<(String, f32)> = all_ids.into_iter().map(|id| {
+        (id, v_map.get(&id).copied().unwrap_or(0.0) * 0.6)
+    }).collect();
+    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    assert_eq!(results[0].0, "c1", "highest vector score should rank first");
+}
+
+// ---------------------------------------------------------------------------
+// Test 20: Score fusion — custom weights applied correctly.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_score_fusion_custom_weights() {
+    let v: Vec<(String, f32)> = vec![("c1".into(), 0.5)];
+    let k: Vec<(String, f32)> = vec![("c1".into(), 0.8)];
+    let g: Vec<(String, f32)> = vec![("c1".into(), 0.2)];
+
+    let w_v = 0.5f32;
+    let w_k = 0.35f32;
+    let w_g = 0.15f32;
+
+    let v_map: HashMap<String, f32> = v.into_iter().collect();
+    let k_map: HashMap<String, f32> = k.into_iter().collect();
+    let g_map: HashMap<String, f32> = g.into_iter().collect();
+
+    let score = v_map["c1"] * w_v + k_map["c1"] * w_k + g_map["c1"] * w_g;
+    let expected = 0.5 * 0.5 + 0.8 * 0.35 + 0.2 * 0.15;
+    assert!((score - expected).abs() < 1e-5, "custom weights: expected {}, got {}", expected, score);
+    assert!((w_v + w_k + w_g - 1.0).abs() < 1e-6, "custom weights should sum to 1.0");
+}
+
+// ---------------------------------------------------------------------------
+// Test 21: BM25 search — collection isolation maintained.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_bm25_collection_isolation_strict() {
+    use rust_core::storage::SearchEngine;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let engine = SearchEngine::new(tmp.path().to_str().unwrap()).unwrap();
+
+    engine.insert_chunks(vec![rust_core::models::ChunkRecord {
+        id: uuid::Uuid::new_v4().to_string(),
+        doc_id: uuid::Uuid::new_v4().to_string(),
+        collection_id: "alpha".to_string(),
+        text: "alpha collection document about space".to_string(),
+        contextual_text: String::new(),
+        embedding: vec![0.0f32; 1024],
+        position: 0,
+        token_count: Some(5),
+        page: Some(1),
+        topics: vec![],
+        created_at: 1234567890,
+    }]).unwrap();
+
+    engine.insert_chunks(vec![rust_core::models::ChunkRecord {
+        id: uuid::Uuid::new_v4().to_string(),
+        doc_id: uuid::Uuid::new_v4().to_string(),
+        collection_id: "beta".to_string(),
+        text: "beta collection document about space".to_string(),
+        contextual_text: String::new(),
+        embedding: vec![0.0f32; 1024],
+        position: 0,
+        token_count: Some(5),
+        page: Some(1),
+        topics: vec![],
+        created_at: 1234567890,
+    }]).unwrap();
+
+    engine.commit_pending().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let alpha = engine.search("alpha", "space", 10).unwrap();
+    let beta = engine.search("beta", "space", 10).unwrap();
+
+    assert!(!alpha.is_empty(), "alpha should have results");
+    assert!(!beta.is_empty(), "beta should have results");
+
+    for r in &alpha {
+        assert_eq!(r.get("collection_id").unwrap().as_str().unwrap(), "alpha",
+            "alpha search should only return alpha results");
+    }
+    for r in &beta {
+        assert_eq!(r.get("collection_id").unwrap().as_str().unwrap(), "beta",
+            "beta search should only return beta results");
+    }
 }

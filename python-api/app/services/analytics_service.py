@@ -217,34 +217,24 @@ CLUSTER_COLORS = [
 
 async def extract_cluster_topic(node_labels: list[str]) -> str:
     """Call Ollama Cloud to produce a 3-5 word topic name for a cluster."""
-    import httpx
-    from app.config import get_settings
+    from app.llm.ollama_client import call_ollama_cloud, OllamaCloudError
 
-    settings = get_settings()
     sample = node_labels[:30]
-    prompt = (
+    user_prompt = (
         f"These entities belong to the same topic cluster:\n{', '.join(sample)}\n\n"
         "Name this cluster's topic in 3-5 words. "
         "Respond with only the topic name, nothing else."
     )
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
-                f"{settings.ollama_cloud_base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.ollama_cloud_api_key}"},
-                json={
-                    "model": settings.ollama_cloud_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 20,
-                    "temperature": 0.3,
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"].strip()
-    except Exception as exc:
+        response = await call_ollama_cloud(
+            system_prompt="You are a topic naming assistant.",
+            user_prompt=user_prompt,
+            max_tokens=20,
+            temperature=0.3,
+        )
+        return response["content"]
+    except (OllamaCloudError, Exception) as exc:
         logger.warning(f"Cluster topic extraction failed: {exc}")
-        # Fallback: most frequent non-trivial words in the labels
         from collections import Counter
         words = " ".join(sample).split()
         top = Counter(w.lower() for w in words if len(w) > 3).most_common(3)

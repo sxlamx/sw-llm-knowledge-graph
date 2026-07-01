@@ -672,3 +672,58 @@ class TestDriveChannels:
             from app.db.lancedb_client import delete_drive_channel
             await delete_drive_channel("ch1")
         tbl.delete.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# NER tag updates
+# ---------------------------------------------------------------------------
+
+class TestNERUpdates:
+    async def test_bulk_update_returns_count(self):
+        tbl = _mock_table()
+        db = MagicMock()
+        db.open_table.return_value = tbl
+
+        updates = [
+            {"id": "chunk-1", "ner_tags": '[{"label":"PERSON"}]', "ner_version": 3},
+            {"id": "chunk-2", "ner_tags": '[{"label":"ORG"}]', "ner_version": 3},
+        ]
+        mock_merge = MagicMock()
+        tbl.merge_insert.return_value = mock_merge
+        mock_merge.when_matched_update_all.return_value = mock_merge
+
+        with patch("app.db.lancedb_client._db", db):
+            from app.db.lancedb_client import bulk_update_chunk_ner_tags
+            result = await bulk_update_chunk_ner_tags("c1", updates)
+        assert result == 2
+
+    async def test_bulk_update_empty_returns_zero(self):
+        with patch("app.db.lancedb_client._db", _mock_db()):
+            from app.db.lancedb_client import bulk_update_chunk_ner_tags
+            result = await bulk_update_chunk_ner_tags("c1", [])
+        assert result == 0
+
+    async def test_bulk_update_returns_zero_on_error(self):
+        db = _mock_db()  # open_table will raise
+        with patch("app.db.lancedb_client._db", db):
+            from app.db.lancedb_client import bulk_update_chunk_ner_tags
+            result = await bulk_update_chunk_ner_tags("c1", [{"id": "x", "ner_tags": "[]", "ner_version": 3}])
+        assert result == 0
+
+    async def test_get_outdated_ner_chunks_returns_rows(self):
+        rows = [
+            {"id": "chunk-1", "text": "hello world", "ner_version": 1},
+            {"id": "chunk-2", "text": "legal text", "ner_version": 2},
+        ]
+        db = _mock_db({"c1_chunks": rows})
+        with patch("app.db.lancedb_client._db", db):
+            from app.db.lancedb_client import get_outdated_ner_chunks
+            result = await get_outdated_ner_chunks("c1", 3)
+        assert result == rows
+
+    async def test_get_outdated_ner_chunks_empty_on_error(self):
+        db = _mock_db()
+        with patch("app.db.lancedb_client._db", db):
+            from app.db.lancedb_client import get_outdated_ner_chunks
+            result = await get_outdated_ner_chunks("c1", 3)
+        assert result == []

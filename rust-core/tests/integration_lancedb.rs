@@ -225,7 +225,10 @@ fn test_index_manager_insert_chunks_via_json() {
     let im = IndexManager::new(env.path.to_str().unwrap()).unwrap();
     let coll_id = Uuid::new_v4().to_string();
 
-    im.initialize_collection(&coll_id).unwrap();
+    pyo3::prepare_freethreaded_python();
+    pyo3::Python::with_gil(|py| {
+        im.initialize_collection(py, &coll_id).unwrap();
+    });
 
     let chunks = serde_json::json!([{
         "id": Uuid::new_v4().to_string(),
@@ -242,7 +245,9 @@ fn test_index_manager_insert_chunks_via_json() {
     }])
     .to_string();
 
-    let count = im.insert_chunks(&coll_id, &chunks).unwrap();
+    let count = pyo3::Python::with_gil(|py| {
+        im.insert_chunks(py, &coll_id, &chunks).unwrap()
+    });
     assert_eq!(count, 1);
 }
 
@@ -252,7 +257,10 @@ fn test_index_manager_text_search_returns_results() {
     let im = IndexManager::new(env.path.to_str().unwrap()).unwrap();
     let coll_id = Uuid::new_v4().to_string();
 
-    im.initialize_collection(&coll_id).unwrap();
+    pyo3::prepare_freethreaded_python();
+    pyo3::Python::with_gil(|py| {
+        im.initialize_collection(py, &coll_id).unwrap();
+    });
 
     let chunks = serde_json::json!([{
         "id": Uuid::new_v4().to_string(),
@@ -269,12 +277,16 @@ fn test_index_manager_text_search_returns_results() {
     }])
     .to_string();
 
-    im.insert_chunks(&coll_id, &chunks).unwrap();
-    im.flush_tantivy().unwrap();
+    pyo3::Python::with_gil(|py| {
+        im.insert_chunks(py, &coll_id, &chunks).unwrap();
+        im.flush_tantivy(py).unwrap();
+    });
 
     std::thread::sleep(std::time::Duration::from_millis(200));
 
-    let results_json = im.text_search(&coll_id, "rust", 10).unwrap();
+    let results_json = pyo3::Python::with_gil(|py| {
+        im.text_search(py, &coll_id, "rust", 10).unwrap()
+    });
     let results: Vec<serde_json::Value> = serde_json::from_str(&results_json).unwrap();
     assert!(!results.is_empty(), "should find 'rust' in indexed content");
 }
@@ -297,7 +309,10 @@ fn test_index_manager_pending_writes_tracks_inserts() {
     let im = IndexManager::new(env.path.to_str().unwrap()).unwrap();
     let coll_id = Uuid::new_v4().to_string();
 
-    im.initialize_collection(&coll_id).unwrap();
+    pyo3::prepare_freethreaded_python();
+    pyo3::Python::with_gil(|py| {
+        im.initialize_collection(py, &coll_id).unwrap();
+    });
 
     let initial_pending = im.pending_writes_count();
     assert_eq!(initial_pending, 0);
@@ -317,7 +332,9 @@ fn test_index_manager_pending_writes_tracks_inserts() {
     }])
     .to_string();
 
-    im.insert_chunks(&coll_id, &chunks).unwrap();
+    pyo3::Python::with_gil(|py| {
+        im.insert_chunks(py, &coll_id, &chunks).unwrap();
+    });
 
     let after_insert = im.pending_writes_count();
     assert!(after_insert > 0, "pending writes should increase after insert");
@@ -329,7 +346,10 @@ fn test_index_manager_graph_data_accessible_after_node_insert() {
     let im = IndexManager::new(env.path.to_str().unwrap()).unwrap();
     let coll_id = Uuid::new_v4().to_string();
 
-    im.initialize_collection(&coll_id).unwrap();
+    pyo3::prepare_freethreaded_python();
+    pyo3::Python::with_gil(|py| {
+        im.initialize_collection(py, &coll_id).unwrap();
+    });
 
     let node_id = Uuid::new_v4();
     let nodes = serde_json::json!([{
@@ -347,11 +367,117 @@ fn test_index_manager_graph_data_accessible_after_node_insert() {
     }])
     .to_string();
 
-    im.upsert_nodes(&coll_id, &nodes).unwrap();
+    pyo3::Python::with_gil(|py| {
+        im.upsert_nodes(py, &coll_id, &nodes).unwrap();
+    });
 
-    let graph_json = im.get_graph_data(&coll_id).unwrap();
+    let graph_json = pyo3::Python::with_gil(|py| {
+        im.get_graph_data(py, &coll_id).unwrap()
+    });
     let graph: serde_json::Value = serde_json::from_str(&graph_json).unwrap();
 
     assert_eq!(graph["total_nodes"], 1);
     assert_eq!(graph["total_edges"], 0);
+}
+
+// ---------------------------------------------------------------------------
+// LanceDB vector search integration
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_index_manager_insert_chunks_batch_writes_to_lancedb() {
+    let env = make_test_env();
+    let im = IndexManager::new(env.path.to_str().unwrap()).unwrap();
+    let coll_id = Uuid::new_v4().to_string();
+
+    pyo3::prepare_freethreaded_python();
+    pyo3::Python::with_gil(|py| {
+        im.initialize_collection(py, &coll_id).unwrap();
+    });
+
+    let chunks = serde_json::json!([{
+        "id": Uuid::new_v4().to_string(),
+        "doc_id": Uuid::new_v4().to_string(),
+        "collection_id": coll_id,
+        "text": "vector search test document",
+        "contextual_text": "context: vector search test",
+        "embedding": vec![0.1f32; 1024],
+        "position": 0,
+        "token_count": 6,
+        "page": 1,
+        "topics": ["test"],
+        "created_at": 1700000000000i64
+    }])
+    .to_string();
+
+    let count = pyo3::Python::with_gil(|py| {
+        im.insert_chunks_batch(py, &coll_id, &chunks).unwrap()
+    });
+    assert_eq!(count, 1, "should insert 1 chunk via LanceDB");
+}
+
+#[test]
+fn test_index_manager_vector_search_returns_results() {
+    let env = make_test_env();
+    let im = IndexManager::new(env.path.to_str().unwrap()).unwrap();
+    let coll_id = Uuid::new_v4().to_string();
+
+    pyo3::prepare_freethreaded_python();
+    pyo3::Python::with_gil(|py| {
+        im.initialize_collection(py, &coll_id).unwrap();
+    });
+
+    let chunks = serde_json::json!([{
+        "id": Uuid::new_v4().to_string(),
+        "doc_id": Uuid::new_v4().to_string(),
+        "collection_id": coll_id,
+        "text": "hello vector world",
+        "contextual_text": "context: hello vector world",
+        "embedding": vec![0.5f32; 1024],
+        "position": 0,
+        "token_count": 3,
+        "page": 1,
+        "topics": ["vector"],
+        "created_at": 1700000000000i64
+    }])
+    .to_string();
+
+    pyo3::Python::with_gil(|py| {
+        im.insert_chunks_batch(py, &coll_id, &chunks).unwrap();
+    });
+
+    let embedding = vec![0.5f32; 1024];
+    let results_json = pyo3::Python::with_gil(|py| {
+        im.vector_search(py, embedding, &coll_id, 10).unwrap()
+    });
+
+    let results: Vec<serde_json::Value> = serde_json::from_str(&results_json).unwrap();
+    assert!(!results.is_empty(), "vector search should return at least 1 result");
+}
+
+#[test]
+fn test_index_manager_vector_search_empty_for_unknown_collection() {
+    let env = make_test_env();
+    let im = IndexManager::new(env.path.to_str().unwrap()).unwrap();
+    let unknown_coll = Uuid::new_v4().to_string();
+
+    pyo3::prepare_freethreaded_python();
+    let embedding = vec![0.1f32; 1024];
+    let results_json = pyo3::Python::with_gil(|py| {
+        im.vector_search(py, embedding, &unknown_coll, 10).unwrap()
+    });
+
+    let results: Vec<serde_json::Value> = serde_json::from_str(&results_json).unwrap();
+    assert!(results.is_empty(), "vector search on unknown collection should return empty");
+}
+
+#[test]
+fn test_validate_path_blocks_traversal_in_scanner() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    let scanner = rust_core::ingestion::FileScanner::new(root.clone(), vec![root]);
+
+    let traversal_path = tmp.path().join("..").join("..").join("etc").join("passwd");
+    let result = scanner.validate_path(&traversal_path);
+    assert!(result.is_err(), "path traversal should be blocked");
 }

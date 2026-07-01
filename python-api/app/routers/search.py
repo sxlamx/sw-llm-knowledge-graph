@@ -1,6 +1,6 @@
 """Search router."""
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from app.auth.middleware import get_current_user
 from app.db.lancedb_client import get_collection as get_collection_by_id
 from app.models.schemas import (
@@ -95,11 +95,35 @@ async def get_suggestions(
     if collection_id:
         await _verify_collection_access(collection_id, current_user)
 
-    suggestions = [
-        f"{q} applications",
-        f"{q} implementation",
-        f"{q} architecture",
-        f"{q} research",
-        f"{q} overview",
-    ]
-    return SuggestionResponse(suggestions=suggestions[:limit])
+    try:
+        from app.llm.embedder import embed_query
+        from app.db.lancedb_client import vector_search as _vector_search
+
+        embedding = await embed_query(q)
+        if not embedding or all(v == 0.0 for v in embedding):
+            return SuggestionResponse(suggestions=[])
+
+        target_collections = [collection_id] if collection_id else []
+        if not target_collections:
+            return SuggestionResponse(suggestions=[])
+
+        all_results = []
+        for cid in target_collections:
+            results = await _vector_search(cid, embedding, limit=5)
+            all_results.extend(results)
+
+        suggestions = []
+        seen = set()
+        for r in all_results:
+            text = r.get("text", "")
+            excerpt = text[:120].strip() if text else ""
+            if excerpt and excerpt not in seen:
+                seen.add(excerpt)
+                suggestions.append(excerpt)
+            if len(suggestions) >= limit:
+                break
+
+        return SuggestionResponse(suggestions=suggestions)
+    except Exception as e:
+        logger.warning(f"Suggestions search error: {e}")
+        return SuggestionResponse(suggestions=[])

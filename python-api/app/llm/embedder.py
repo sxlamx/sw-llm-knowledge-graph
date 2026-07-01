@@ -5,6 +5,7 @@ separate prompt instructions for passages (indexing) vs queries (search).
 """
 
 import asyncio
+import hashlib
 import logging
 from functools import lru_cache
 from app.config import get_settings
@@ -66,14 +67,14 @@ async def embed_texts(
 
     async with _cache_lock:
         for i, text in enumerate(texts):
-            key = text[:100]
+            key = hashlib.sha256(text.encode()).hexdigest()
             if key in _cache:
                 results[i] = _cache[key]
             else:
                 uncached.append((i, text))
 
     if uncached:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             batch_texts = [b[1] for b in uncached]
             embeddings = await loop.run_in_executor(
@@ -81,7 +82,8 @@ async def embed_texts(
             )
             async with _cache_lock:
                 for (idx, text), emb in zip(uncached, embeddings):
-                    _cache[text[:100]] = emb
+                    key = hashlib.sha256(text.encode()).hexdigest()
+                    _cache[key] = emb
                     results[idx] = emb
         except Exception as e:
             logger.warning(f"Embedding failed: {e}")
@@ -94,7 +96,7 @@ async def embed_texts(
 
 async def embed_query(query: str) -> list[float]:
     """Embed a search query (uses query instruction prompt)."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         embeddings = await loop.run_in_executor(
             None, _encode_batch, [query], _QUERY_PROMPT

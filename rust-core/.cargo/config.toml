@@ -1,0 +1,2 @@
+[target.aarch64-apple-darwin]
+rustflags = ["-L", "/opt/anaconda3/lib/python3.12/config-3.12-darwin"]

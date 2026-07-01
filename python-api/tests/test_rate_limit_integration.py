@@ -27,39 +27,42 @@ from app.auth.middleware import (
 class TestRateLimiterSlidingWindow:
     """Tests for sliding window behavior."""
 
-    def test_sliding_window_not_token_bucket(self):
+    @pytest.mark.asyncio
+    async def test_sliding_window_not_token_bucket(self):
         """Verify sliding window: requests at start of window don't affect later requests."""
         rl = RateLimiter(per_user_limit=3, per_ip_limit=100, window_seconds=1)
 
         # Exhaust limit at time=0
-        assert rl.check_user("u") is True
-        assert rl.check_user("u") is True
-        assert rl.check_user("u") is True
-        assert rl.check_user("u") is False
+        assert await rl.check_user("u") is True
+        assert await rl.check_user("u") is True
+        assert await rl.check_user("u") is True
+        assert await rl.check_user("u") is False
 
         # Advance to middle of window — still blocked
         rl._counts["u:u"] = [time.time() - 0.5] * 3
-        assert rl.check_user("u") is False
+        assert await rl.check_user("u") is False
 
         # After window expires, allow again
         rl._counts["u:u"] = [time.time() - 1.1]
-        assert rl.check_user("u") is True
+        assert await rl.check_user("u") is True
 
-    def test_expired_entries_evicted_from_counts(self):
+    @pytest.mark.asyncio
+    async def test_expired_entries_evicted_from_counts(self):
         """Entries outside the window must be evicted on each check."""
         rl = RateLimiter(per_user_limit=2, per_ip_limit=100, window_seconds=1)
 
         rl._counts["u:u"] = [time.time() - 2, time.time() - 0.5, time.time() - 0.5]
-        result = rl.check_user("u")
+        result = await rl.check_user("u")
 
         assert result is True
         # The 2 expired entries should be gone, leaving 2 (one new + one remaining)
         assert len(rl._counts["u:u"]) == 2
 
-    def test_empty_counts_key_returns_true(self):
+    @pytest.mark.asyncio
+    async def test_empty_counts_key_returns_true(self):
         """Unknown user/IP key should start fresh with an empty list."""
         rl = RateLimiter(per_user_limit=5, per_ip_limit=100, window_seconds=60)
-        assert rl.check_user("brand-new-user") is True
+        assert await rl.check_user("brand-new-user") is True
         assert rl._counts["u:brand-new-user"] == [time.time()]
 
 

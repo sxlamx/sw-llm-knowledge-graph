@@ -29,6 +29,7 @@ import {
   useUpdateOntologyMutation,
   useGenerateOntologyMutation,
   EntityTypeDef,
+  Ontology,
 } from '../api/ontologyApi';
 import { useAppDispatch } from '../store';
 import { showSnackbar } from '../store/slices/uiSlice';
@@ -40,6 +41,7 @@ const OntologyEditor: React.FC = () => {
   const [newEntityName, setNewEntityName] = useState('');
   const [newEntityDesc, setNewEntityDesc] = useState('');
   const [selectedType, setSelectedType] = useState<string | null>(null);
+  const [proposal, setProposal] = useState<Ontology | null>(null);
 
   const { data: ontology, isLoading, isError } = useGetOntologyQuery(
     { collection_id: collectionId! },
@@ -67,10 +69,26 @@ const OntologyEditor: React.FC = () => {
 
   const handleGenerate = async () => {
     try {
-      await generateOntology({ collection_id: collectionId! }).unwrap();
-      dispatch(showSnackbar({ message: 'Ontology generated from documents.', severity: 'success' }));
+      const result = await generateOntology({ collection_id: collectionId! }).unwrap();
+      const proposalData = result.proposal ?? result;
+      setProposal(proposalData);
     } catch {
-      dispatch(showSnackbar({ message: 'Failed to generate ontology.', severity: 'error' }));
+      dispatch(showSnackbar({ message: 'Failed to generate ontology proposal.', severity: 'error' }));
+    }
+  };
+
+  const handleApplyProposal = async () => {
+    if (!proposal || !collectionId) return;
+    try {
+      await updateOntology({
+        collection_id: collectionId,
+        entity_types: proposal.entity_types,
+        relationship_types: proposal.relationship_types,
+      }).unwrap();
+      dispatch(showSnackbar({ message: 'Ontology applied successfully.', severity: 'success' }));
+      setProposal(null);
+    } catch {
+      dispatch(showSnackbar({ message: 'Failed to apply ontology.', severity: 'error' }));
     }
   };
 
@@ -213,6 +231,45 @@ const OntologyEditor: React.FC = () => {
             disabled={isUpdating || !newEntityName.trim()}
           >
             Add
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Proposal review dialog */}
+      <Dialog open={proposal !== null} onClose={() => setProposal(null)} maxWidth="md" fullWidth>
+        <DialogTitle>Review Generated Ontology Proposal</DialogTitle>
+        <DialogContent>
+          {proposal && (
+            <Box>
+              <Typography variant="subtitle2" gutterBottom>Proposed Entity Types ({Object.keys(proposal.entity_types).length})</Typography>
+              <List dense disablePadding sx={{ mb: 2 }}>
+                {Object.entries(proposal.entity_types).map(([name, def]) => (
+                  <ListItem key={name} disablePadding sx={{ py: 0.25 }}>
+                    <ListItemText primary={name} secondary={def.description} primaryTypographyProps={{ variant: 'body2' }} secondaryTypographyProps={{ variant: 'caption' }} />
+                  </ListItem>
+                ))}
+              </List>
+              <Divider sx={{ my: 1 }} />
+              <Typography variant="subtitle2" gutterBottom>Proposed Relationship Types ({Object.keys(proposal.relationship_types).length})</Typography>
+              <List dense disablePadding>
+                {Object.entries(proposal.relationship_types).map(([name, def]) => (
+                  <ListItem key={name} disablePadding sx={{ py: 0.25 }}>
+                    <ListItemText
+                      primary={name}
+                      secondary={`${(def.domain ?? []).join(', ')} → ${(def.range ?? []).join(', ')}${def.description ? ': ' + def.description : ''}`}
+                      primaryTypographyProps={{ variant: 'body2' }}
+                      secondaryTypographyProps={{ variant: 'caption' }}
+                    />
+                  </ListItem>
+                ))}
+              </List>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setProposal(null)}>Reject</Button>
+          <Button variant="contained" onClick={handleApplyProposal} disabled={isUpdating}>
+            {isUpdating ? 'Applying…' : 'Apply'}
           </Button>
         </DialogActions>
       </Dialog>

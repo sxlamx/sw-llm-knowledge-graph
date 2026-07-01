@@ -8,8 +8,16 @@ from httpx import AsyncClient, ASGITransport
 
 from app.routers.search import router
 from app.auth.middleware import get_current_user
+from app.db.lancedb_client import get_collection
 
 FAKE_USER = {"id": "test-user-id", "email": "test@example.com", "name": "Test User"}
+
+FAKE_COLLECTION = {
+    "id": "col-1",
+    "user_id": "test-user-id",
+    "name": "Test Collection",
+    "created_at": "2024-01-01T00:00:00Z",
+}
 
 FAKE_RESULTS = [
     {
@@ -46,9 +54,15 @@ def app():
 class TestSearch:
     async def test_basic_search_returns_results(self, app):
         with patch(
+            "app.routers.search.get_collection_by_id",
+            return_value=FAKE_COLLECTION,
+        ), patch(
             "app.routers.search.hybrid_search",
             new_callable=AsyncMock,
             return_value=FAKE_RESULTS,
+        ), patch(
+            "app.routers.search.get_collection_by_id",
+            return_value=FAKE_COLLECTION,
         ):
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
@@ -72,9 +86,15 @@ class TestSearch:
 
     async def test_empty_results_returns_zero_total(self, app):
         with patch(
+            "app.routers.search.get_collection_by_id",
+            return_value=FAKE_COLLECTION,
+        ), patch(
             "app.routers.search.hybrid_search",
             new_callable=AsyncMock,
             return_value=[],
+        ), patch(
+            "app.routers.search.get_collection_by_id",
+            return_value=FAKE_COLLECTION,
         ):
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
@@ -95,7 +115,10 @@ class TestSearch:
             captured_kwargs.update(kwargs)
             return []
 
-        with patch("app.routers.search.hybrid_search", side_effect=mock_search):
+        with patch(
+            "app.routers.search.get_collection_by_id",
+            return_value=FAKE_COLLECTION,
+        ), patch("app.routers.search.hybrid_search", side_effect=mock_search):
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as ac:
@@ -114,6 +137,9 @@ class TestSearch:
     async def test_search_error_returns_empty_results(self, app):
         """On backend error, search should return an empty list, not 500."""
         with patch(
+            "app.routers.search.get_collection_by_id",
+            return_value=FAKE_COLLECTION,
+        ), patch(
             "app.routers.search.hybrid_search",
             new_callable=AsyncMock,
             side_effect=RuntimeError("Rust core unavailable"),
@@ -131,6 +157,9 @@ class TestSearch:
 
     async def test_search_response_includes_latency_ms(self, app):
         with patch(
+            "app.routers.search.get_collection_by_id",
+            return_value=FAKE_COLLECTION,
+        ), patch(
             "app.routers.search.hybrid_search",
             new_callable=AsyncMock,
             return_value=[],
@@ -155,7 +184,10 @@ class TestSearch:
             captured.update(kwargs)
             return []
 
-        with patch("app.routers.search.hybrid_search", side_effect=mock_search):
+        with patch(
+            "app.routers.search.get_collection_by_id",
+            return_value=FAKE_COLLECTION,
+        ), patch("app.routers.search.hybrid_search", side_effect=mock_search):
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as ac:
@@ -180,7 +212,10 @@ class TestSearch:
             captured.update(kwargs)
             return []
 
-        with patch("app.routers.search.hybrid_search", side_effect=mock_search):
+        with patch(
+            "app.routers.search.get_collection_by_id",
+            return_value=FAKE_COLLECTION,
+        ), patch("app.routers.search.hybrid_search", side_effect=mock_search):
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as ac:
@@ -203,6 +238,9 @@ class TestSearch:
             {**FAKE_RESULTS[0], "final_score": 0.7, "chunk_id": "c"},
         ]
         with patch(
+            "app.routers.search.get_collection_by_id",
+            return_value=FAKE_COLLECTION,
+        ), patch(
             "app.routers.search.hybrid_search",
             new_callable=AsyncMock,
             return_value=results,
@@ -218,40 +256,93 @@ class TestSearch:
         data = response.json()
         assert data["total"] == 3
 
+    # ---------------------------------------------------------------------------
+    # Phase 4 — Topic filter propagation and post-filter
+    # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# GET /search/suggestions
-# ---------------------------------------------------------------------------
+    async def test_topic_filter_on_hybrid_search(self, app):
+        """Verify topics are passed through to hybrid_search for post-filtering."""
+        captured = {}
 
-class TestSuggestions:
-    async def test_returns_suggestions_for_query(self, app):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as ac:
-            response = await ac.get("/search/suggestions?q=machine")
+        async def mock_search(**kwargs):
+            captured.update(kwargs)
+            return []
+
+        with patch(
+            "app.routers.search.get_collection_by_id",
+            return_value=FAKE_COLLECTION,
+        ), patch("app.routers.search.hybrid_search", side_effect=mock_search):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.post(
+                    "/search",
+                    json={
+                        "query": "contract law",
+                        "collection_ids": ["col-1"],
+                        "mode": "hybrid",
+                        "topics": ["contracts", "legal"],
+                    },
+                )
+
+        assert response.status_code == 200
+        assert captured.get("topics") == ["contracts", "legal"]
+
+    async def test_search_returns_highlights_field(self, app):
+        """Verify highlights from BM25 are propagated through fusion to the API response."""
+        results_with_highlights = [
+            {
+                **FAKE_RESULTS[0],
+                "highlights": ["machine learning", "artificial intelligence"],
+            }
+        ]
+        with patch(
+            "app.routers.search.get_collection_by_id",
+            return_value=FAKE_COLLECTION,
+        ), patch(
+            "app.routers.search.hybrid_search",
+            new_callable=AsyncMock,
+            return_value=results_with_highlights,
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.post(
+                    "/search",
+                    json={"query": "machine learning", "collection_ids": ["col-1"]},
+                )
 
         assert response.status_code == 200
         data = response.json()
-        assert "suggestions" in data
-        assert len(data["suggestions"]) > 0
-        # Each suggestion should start with the query
-        for s in data["suggestions"]:
-            assert "machine" in s
+        assert len(data["results"]) >= 1
+        r = data["results"][0]
+        assert "highlights" in r
+        assert len(r["highlights"]) >= 1
 
-    async def test_limit_parameter_respected(self, app):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as ac:
-            response = await ac.get("/search/suggestions?q=neural&limit=3")
+    async def test_search_graph_proximity_score_field(self, app):
+        """Verify graph_proximity_score is returned in API response."""
+        graph_result = {
+            **FAKE_RESULTS[0],
+            "graph_proximity_score": 0.45,
+            "final_score": 0.85,
+        }
+        with patch(
+            "app.routers.search.get_collection_by_id",
+            return_value=FAKE_COLLECTION,
+        ), patch(
+            "app.routers.search.hybrid_search",
+            new_callable=AsyncMock,
+            return_value=[graph_result],
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.post(
+                    "/search",
+                    json={"query": "entity graph", "collection_ids": ["col-1"]},
+                )
 
         assert response.status_code == 200
-        assert len(response.json()["suggestions"]) <= 3
-
-    async def test_short_query_returns_422(self, app):
-        """Query under 2 chars fails validation."""
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as ac:
-            response = await ac.get("/search/suggestions?q=a")
-
-        assert response.status_code == 422
+        r = response.json()["results"][0]
+        assert "graph_proximity_score" in r
+        assert r["graph_proximity_score"] == pytest.approx(0.45)

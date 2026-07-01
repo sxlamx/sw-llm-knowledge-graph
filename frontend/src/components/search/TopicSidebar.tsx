@@ -10,26 +10,22 @@ import {
 } from '@mui/material';
 import { useAppDispatch, useAppSelector } from '../../store';
 import { setSelectedTopics } from '../../store/slices/searchSlice';
-
-// Static topic list for now; Phase 2 will wire up GET /topics
-const SAMPLE_TOPICS = [
-  'Machine Learning',
-  'Natural Language Processing',
-  'Knowledge Graphs',
-  'Neural Networks',
-  'Data Engineering',
-  'Computer Vision',
-  'Reinforcement Learning',
-  'Graph Databases',
-];
+import { useListTopicsQuery } from '../../api/topicsApi';
 
 interface Props {
-  loading?: boolean;
+  collectionId?: string | null;
 }
 
-const TopicSidebar: React.FC<Props> = ({ loading }) => {
+const TopicSidebar: React.FC<Props> = ({ collectionId }) => {
   const dispatch = useAppDispatch();
   const selectedTopics = useAppSelector((s) => s.search.selectedTopics);
+
+  const { data, isLoading } = useListTopicsQuery(
+    { collection_id: collectionId!, limit: 100 },
+    { skip: !collectionId },
+  );
+
+  const topics = data?.topics ?? [];
 
   const toggle = (topic: string) => {
     const next = selectedTopics.includes(topic)
@@ -44,23 +40,31 @@ const TopicSidebar: React.FC<Props> = ({ loading }) => {
         Topics
       </Typography>
       <Divider sx={{ mb: 1 }} />
-      {loading ? (
+      {!collectionId ? (
+        <Typography variant="body2" color="text.secondary" sx={{ py: 1 }}>
+          Select a collection to see topics.
+        </Typography>
+      ) : isLoading ? (
         Array.from({ length: 6 }).map((_, i) => (
           <Skeleton key={i} height={28} sx={{ mb: 0.5 }} />
         ))
+      ) : topics.length === 0 ? (
+        <Typography variant="body2" color="text.secondary" sx={{ py: 1 }}>
+          No topics found.
+        </Typography>
       ) : (
         <FormGroup>
-          {SAMPLE_TOPICS.map((topic) => (
+          {topics.map((topic) => (
             <FormControlLabel
-              key={topic}
+              key={topic.id}
               control={
                 <Checkbox
                   size="small"
-                  checked={selectedTopics.includes(topic)}
-                  onChange={() => toggle(topic)}
+                  checked={selectedTopics.includes(topic.name)}
+                  onChange={() => toggle(topic.name)}
                 />
               }
-              label={<Typography variant="body2">{topic}</Typography>}
+              label={<Typography variant="body2">{topic.name}</Typography>}
               sx={{ my: -0.25 }}
             />
           ))}

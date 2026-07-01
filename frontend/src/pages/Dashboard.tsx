@@ -38,6 +38,7 @@ const Dashboard: React.FC = () => {
   const [newName, setNewName] = useState('');
   const [newDescription, setNewDescription] = useState('');
   const [newFolderPath, setNewFolderPath] = useState('');
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   const { data, isLoading } = useListCollectionsQuery();
   const [createCollection, { isLoading: isCreating }] = useCreateCollectionMutation();
@@ -105,6 +106,7 @@ const Dashboard: React.FC = () => {
           <Tooltip title="Open collection">
             <IconButton
               size="small"
+              aria-label="Open collection"
               onClick={() => {
                 dispatch(setActiveCollection(row.id));
                 navigate(`/collection/${row.id}`);
@@ -116,6 +118,7 @@ const Dashboard: React.FC = () => {
           <Tooltip title="Search in collection">
             <IconButton
               size="small"
+              aria-label="Search in collection"
               onClick={() => {
                 dispatch(setActiveCollection(row.id));
                 navigate('/search');
@@ -127,6 +130,7 @@ const Dashboard: React.FC = () => {
           <Tooltip title="View graph">
             <IconButton
               size="small"
+              aria-label="View graph"
               onClick={() => navigate(`/graph/${row.id}`)}
             >
               <AccountTreeIcon fontSize="small" />
@@ -136,7 +140,8 @@ const Dashboard: React.FC = () => {
             <IconButton
               size="small"
               color="error"
-              onClick={() => handleDelete(row.id)}
+              aria-label="Delete collection"
+              onClick={() => setDeleteConfirmId(row.id)}
             >
               <DeleteIcon fontSize="small" />
             </IconButton>
@@ -213,6 +218,26 @@ const Dashboard: React.FC = () => {
             disabled={isCreating || !newName.trim()}
           >
             {isCreating ? 'Creating…' : 'Create'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={deleteConfirmId !== null} onClose={() => setDeleteConfirmId(null)} maxWidth="xs">
+        <DialogTitle>Delete collection?</DialogTitle>
+        <DialogContent>
+          This will permanently delete the collection and all its data.
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteConfirmId(null)}>Cancel</Button>
+          <Button
+            variant="contained"
+            color="error"
+            onClick={() => {
+              if (deleteConfirmId) handleDelete(deleteConfirmId);
+              setDeleteConfirmId(null);
+            }}
+          >
+            Delete
           </Button>
         </DialogActions>
       </Dialog>

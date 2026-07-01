@@ -20,6 +20,7 @@ import { showSnackbar } from '../../store/slices/uiSlice';
 import { api } from '../../api/baseApi';
 import ProgressBar from './ProgressBar';
 import JobStatusChip from './JobStatusChip';
+import TemplatePicker from './TemplatePicker';
 
 interface Props {
   collectionId: string;
@@ -30,7 +31,6 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api/v1';
 const IngestPanel: React.FC<Props> = ({ collectionId }) => {
   const dispatch = useAppDispatch();
   const [folderPath, setFolderPath] = useState('');
-  const [showPathInput, setShowPathInput] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [currentFile, setCurrentFile] = useState<string | undefined>();
@@ -38,17 +38,20 @@ const IngestPanel: React.FC<Props> = ({ collectionId }) => {
   const [chunkSize, setChunkSize] = useState(512);
   const [chunkOverlap, setChunkOverlap] = useState(50);
   const [extractEntities, setExtractEntities] = useState(true);
+  const [template, setTemplate] = useState<string | null>(null);
+
+  const [sseError, setSseError] = useState<'reconnecting' | 'failed' | null>(null);
 
   const [startIngest, { isLoading }] = useStartIngestJobMutation();
 
   const handleSelectFolder = async () => {
     try {
       const dirHandle = await (window as Window & typeof globalThis & { showDirectoryPicker?: (opts?: object) => Promise<{ name: string }> }).showDirectoryPicker?.({ mode: 'read' });
-      if (dirHandle) setFolderPath(dirHandle.name);
-    } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        setShowPathInput(true);
+      if (dirHandle) {
+        setFolderPath(dirHandle.name);
       }
+    } catch {
+      // user cancelled or not supported
     }
   };
 
@@ -61,7 +64,7 @@ const IngestPanel: React.FC<Props> = ({ collectionId }) => {
       const result = await startIngest({
         collection_id: collectionId,
         folder_path: folderPath,
-        options: { chunk_size_tokens: chunkSize, chunk_overlap_tokens: chunkOverlap },
+        options: { chunk_size_tokens: chunkSize, chunk_overlap_tokens: chunkOverlap, extract_entities: extractEntities, template: template || undefined },
       }).unwrap();
       setActiveJobId(result.job_id ?? result.id);
       setProgress(0);
@@ -74,45 +77,71 @@ const IngestPanel: React.FC<Props> = ({ collectionId }) => {
   useEffect(() => {
     if (!activeJobId) return;
 
-    const eventSource = new EventSource(
-      `${API_BASE}/ingest/jobs/${activeJobId}/stream`,
-      { withCredentials: true }
-    );
+    let sseRetryCount = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let eventSource: EventSource | null = null;
 
-    eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data as string) as {
-          type: string;
-          progress?: number;
-          current_file?: string;
-          status?: string;
-        };
-        if (data.type === 'progress') {
-          setProgress(data.progress ?? 0);
-          setCurrentFile(data.current_file);
+    const createEventSource = () => {
+      eventSource = new EventSource(
+        `${API_BASE}/ingest/jobs/${activeJobId}/stream`,
+        { withCredentials: true }
+      );
+
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data as string) as {
+            type: string;
+            progress?: number;
+            current_file?: string;
+            status?: string;
+          };
+          if (data.type === 'progress') {
+            setProgress(data.progress ?? 0);
+            setCurrentFile(data.current_file);
+          }
+          if (data.type === 'completed') {
+            setProgress(1.0);
+            setJobStatus('completed');
+            eventSource?.close();
+            dispatch(api.util.invalidateTags([{ type: 'Collection', id: collectionId }, 'Document']));
+            dispatch(showSnackbar({ message: 'Ingest completed successfully.', severity: 'success' }));
+          }
+          if (data.type === 'failed') {
+            setJobStatus('failed');
+            eventSource?.close();
+            dispatch(showSnackbar({ message: 'Ingest job failed.', severity: 'error' }));
+          }
+        } catch {
+          // ignore
         }
-        if (data.type === 'completed') {
-          setProgress(1.0);
-          setJobStatus('completed');
-          eventSource.close();
-          dispatch(api.util.invalidateTags([{ type: 'Collection', id: collectionId }, 'Document']));
-          dispatch(showSnackbar({ message: 'Ingest completed successfully.', severity: 'success' }));
+      };
+
+      eventSource.onerror = () => {
+        eventSource?.close();
+        eventSource = null;
+        sseRetryCount++;
+        if (sseRetryCount >= 3) {
+          setSseError('failed');
+        } else {
+          setSseError('reconnecting');
+          reconnectTimer = setTimeout(() => {
+            createEventSource();
+          }, 3000);
         }
-        if (data.type === 'failed') {
-          setJobStatus('failed');
-          eventSource.close();
-          dispatch(showSnackbar({ message: 'Ingest job failed.', severity: 'error' }));
-        }
-      } catch {
-        // ignore
+      };
+
+      if (sseRetryCount > 0) {
+        sseRetryCount = 0;
+        setSseError(null);
       }
     };
 
-    eventSource.onerror = () => {
-      eventSource.close();
-    };
+    createEventSource();
 
-    return () => eventSource.close();
+    return () => {
+      eventSource?.close();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+    };
   }, [activeJobId, collectionId, dispatch]);
 
   return (
@@ -122,17 +151,17 @@ const IngestPanel: React.FC<Props> = ({ collectionId }) => {
       </Typography>
 
       <Stack spacing={2}>
-        {!showPathInput ? (
-          <Button
-            variant="outlined"
-            startIcon={<FolderOpenIcon />}
-            onClick={handleSelectFolder}
-          >
-            {folderPath ? folderPath : 'Select Folder'}
-          </Button>
-        ) : null}
-
-        {(showPathInput || !('showDirectoryPicker' in window)) && (
+        <Stack direction="row" spacing={1} alignItems="center">
+          {'showDirectoryPicker' in window && (
+            <Button
+              variant="outlined"
+              startIcon={<FolderOpenIcon />}
+              onClick={handleSelectFolder}
+              size="small"
+            >
+              Browse
+            </Button>
+          )}
           <TextField
             label="Folder path"
             value={folderPath}
@@ -141,7 +170,7 @@ const IngestPanel: React.FC<Props> = ({ collectionId }) => {
             placeholder="/path/to/documents"
             fullWidth
           />
-        )}
+        </Stack>
 
         <Accordion disableGutters elevation={0} sx={{ border: 1, borderColor: 'divider' }}>
           <AccordionSummary expandIcon={<ExpandMoreIcon />}>
@@ -185,6 +214,9 @@ const IngestPanel: React.FC<Props> = ({ collectionId }) => {
                 }
                 label={<Typography variant="body2">Extract entities &amp; relations</Typography>}
               />
+              <Box mt={1}>
+                <TemplatePicker value={template} onChange={setTemplate} />
+              </Box>
             </Stack>
           </AccordionDetails>
         </Accordion>
@@ -198,6 +230,25 @@ const IngestPanel: React.FC<Props> = ({ collectionId }) => {
           {isLoading ? 'Starting...' : 'Start Ingest'}
         </Button>
 
+        {sseError === 'reconnecting' && (
+          <Typography variant="caption" color="warning.main">
+            Connection lost. Reconnecting...
+          </Typography>
+        )}
+        {sseError === 'failed' && (
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Typography variant="caption" color="error.main">
+              Unable to reconnect.
+            </Typography>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={() => setSseError(null)}
+            >
+              Retry
+            </Button>
+          </Stack>
+        )}
         {activeJobId && (
           <Box>
             <Stack direction="row" alignItems="center" spacing={1} mb={1}>

@@ -51,21 +51,12 @@ def get_ontology_validator() -> Optional["PyOntologyValidator"]:
     return None
 
 
-async def rust_search_async(collection_id: str, embedding: list[float], limit: int) -> list[dict]:
-    try:
-        from app.db.lancedb_client import vector_search
-        return await vector_search(collection_id, embedding, limit)
-    except Exception as e:
-        logger.error(f"Vector search error: {e}")
-        return []
-
-
 async def rust_keyword_search_async(collection_id: str, query: str, limit: int) -> list[dict]:
     im = get_index_manager()
     if im is None:
         return []
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         results_json = await loop.run_in_executor(
             _executor,
@@ -82,6 +73,7 @@ async def rust_keyword_search_async(collection_id: str, query: str, limit: int) 
                 "text": r.get("text", ""),
                 "collection_id": collection_id,
                 "keyword_score": keyword_score,
+                "highlights": r.get("highlights", []),
             })
         return fused_results
     except Exception as e:
@@ -96,6 +88,10 @@ async def rust_bfs_proximity_async(
 ) -> list[dict]:
     """Graph proximity channel: find entity nodes similar to query embedding, run BFS, return chunks.
 
+    Uses the Rust IndexManager.graph_proximity_search() which runs bfs_reachable
+    in-memory on the petgraph instead of deserializing JSON to Python and doing
+    BFS there.  Falls back to the Python JSON-based BFS when Rust is unavailable.
+
     Args:
         collection_id: Collection UUID
         query_embedding: 1024-dim query embedding from Qwen3
@@ -108,77 +104,21 @@ async def rust_bfs_proximity_async(
     if im is None:
         return []
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
-        graph_json = await loop.run_in_executor(
+        results_json = await loop.run_in_executor(
             _executor,
-            lambda: im.get_graph_data(collection_id),
+            lambda: im.graph_proximity_search(collection_id, query_embedding, 2, limit),
         )
-        graph_data = json.loads(graph_json)
-
-        if not graph_data.get("nodes"):
+        results = json.loads(results_json)
+        if not isinstance(results, list):
             return []
-
-        # Find top-5 entity nodes by cosine similarity to query embedding
-        import math
-        nodes = graph_data["nodes"]
-        similarities: list[tuple[str, float, str]] = []
-        q_emb = query_embedding
-        q_len = math.sqrt(sum(x * x for x in q_emb)) or 1.0
-
-        for node in nodes:
-            # Nodes don't have embeddings stored in petgraph natively;
-            # use label hash as a proxy or skip similarity if no embedding
-            # For now, return all nodes with weight 1.0 as seed set
-            similarities.append((node["id"], 1.0, node.get("label", "")))
-
-        similarities.sort(key=lambda x: x[1], reverse=True)
-        seed_ids = {s[0] for s in similarities[:5]}
-
-        # Build adjacency from edges
-        edges_by_source: dict[str, list[tuple[str, float]]] = {}
-        for edge in graph_data.get("edges", []):
-            src = edge.get("source")
-            tgt = edge.get("target")
-            weight = edge.get("weight", 0.5)
-            if src:
-                edges_by_source.setdefault(src, []).append((tgt, weight))
-
-        # BFS from seeds, max 2 hops
-        visited: set[str] = set()
-        frontier: list[str] = list(seed_ids)
-        depth: dict[str, int] = {s: 0 for s in seed_ids}
-
-        for _ in range(2):
-            next_frontier: list[str] = []
-            for node_id in frontier:
-                if node_id in visited:
-                    continue
-                visited.add(node_id)
-                for neighbor_id, edge_weight in edges_by_source.get(node_id, []):
-                    if neighbor_id not in visited:
-                        depth[neighbor_id] = depth.get(node_id, 0) + 1
-                        next_frontier.append(neighbor_id)
-            frontier = next_frontier
-
-        # Collect chunk_ids from edges, scored by hop depth
-        chunk_scores: dict[str, float] = {}
-        for edge in graph_data.get("edges", []):
-            src = edge.get("source")
-            if src not in visited:
-                continue
-            chunk_id = str(edge.get("chunk_id") or "")
-            if not chunk_id:
-                continue
-            hop = depth.get(src, 0)
-            score = 1.0 / (hop + 1)  # hop_decay: closer = higher score
-            chunk_scores[chunk_id] = max(chunk_scores.get(chunk_id, 0), score)
-
-        # Sort by score, return top limit
-        sorted_chunks = sorted(chunk_scores.items(), key=lambda x: x[1], reverse=True)
         return [
-            {"chunk_id": cid, "graph_proximity_score": score}
-            for cid, score in sorted_chunks[:limit]
+            {
+                "chunk_id": r.get("chunk_id", ""),
+                "graph_proximity_score": r.get("graph_proximity_score", 0.0),
+            }
+            for r in results
         ]
     except Exception as e:
         logger.error(f"Rust BFS proximity error: {e}")
@@ -190,7 +130,7 @@ async def rust_insert_chunks_async(collection_id: str, chunks_json: str) -> int:
     if im is None:
         return 0
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         count = await loop.run_in_executor(
             _executor,
@@ -207,7 +147,7 @@ async def rust_init_collection_async(collection_id: str) -> None:
     if im is None:
         return
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         await loop.run_in_executor(
             _executor,
@@ -229,7 +169,7 @@ async def _tantivy_commit_loop(interval_seconds: float = 0.5) -> None:
 
         asyncio.create_task(_tantivy_commit_loop())
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     while True:
         await asyncio.sleep(interval_seconds)
         im = get_index_manager()
@@ -262,7 +202,7 @@ async def _graph_prune_loop(
         )
     """
     import json as _json
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     while True:
         await asyncio.sleep(interval_seconds)
         im = get_index_manager()
@@ -288,3 +228,91 @@ async def _graph_prune_loop(
                     logger.warning(f"Graph prune failed for collection {cid}: {e}")
         except Exception as e:
             logger.warning(f"Graph prune loop error: {e}")
+
+
+async def rust_prune_dangling_edges_async(collection_id: str) -> int:
+    """Prune dangling edges (edges whose source/target/participants don't exist in the node set).
+
+    Uses the Rust IndexManager.prune_dangling_edges_pyo3() for fast in-memory pruning.
+    Returns the number of pruned edges.
+    """
+    im = get_index_manager()
+    if im is None:
+        return 0
+
+    loop = asyncio.get_running_loop()
+    try:
+        count = await loop.run_in_executor(
+            _executor,
+            lambda: im.prune_dangling_edges_pyo3(collection_id),
+        )
+        if count > 0:
+            logger.info(f"Pruned {count} dangling edges for collection {collection_id}")
+        return count
+    except Exception as e:
+        logger.error(f"Rust dangling edge prune error: {e}")
+        return 0
+
+
+async def rust_detect_node_conflicts_async(collection_id: str, new_nodes_json: str) -> str:
+    """Async wrapper for IndexManager.detect_node_conflicts()."""
+    im = get_index_manager()
+    if im is None:
+        return "[]"
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(
+            _executor,
+            lambda: im.detect_node_conflicts(collection_id, new_nodes_json),
+        )
+    except Exception as e:
+        logger.error(f"Rust detect_node_conflicts error: {e}")
+        return "[]"
+
+
+async def rust_detect_edge_conflicts_async(collection_id: str, new_edges_json: str) -> str:
+    """Async wrapper for IndexManager.detect_edge_conflicts()."""
+    im = get_index_manager()
+    if im is None:
+        return "[]"
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(
+            _executor,
+            lambda: im.detect_edge_conflicts(collection_id, new_edges_json),
+        )
+    except Exception as e:
+        logger.error(f"Rust detect_edge_conflicts error: {e}")
+        return "[]"
+
+
+async def rust_merge_nodes_async(collection_id: str, new_nodes_json: str, strategy: str) -> str:
+    """Async wrapper for IndexManager.merge_nodes_into_collection()."""
+    im = get_index_manager()
+    if im is None:
+        return '{"merged": 0, "inserted": 0, "conflicted": 0}'
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(
+            _executor,
+            lambda: im.merge_nodes_into_collection(collection_id, new_nodes_json, strategy),
+        )
+    except Exception as e:
+        logger.error(f"Rust merge_nodes error: {e}")
+        return '{"merged": 0, "inserted": 0, "conflicted": 0}'
+
+
+async def rust_merge_edges_async(collection_id: str, new_edges_json: str, strategy: str) -> str:
+    """Async wrapper for IndexManager.merge_edges_into_collection()."""
+    im = get_index_manager()
+    if im is None:
+        return '{"merged": 0, "inserted": 0, "conflicted": 0}'
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(
+            _executor,
+            lambda: im.merge_edges_into_collection(collection_id, new_edges_json, strategy),
+        )
+    except Exception as e:
+        logger.error(f"Rust merge_edges error: {e}")
+        return '{"merged": 0, "inserted": 0, "conflicted": 0}'

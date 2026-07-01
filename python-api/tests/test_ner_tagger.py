@@ -198,22 +198,20 @@ class TestNerTagSchema:
             text="John Smith",
             start=0,
             end=10,
-            source="spacy",
-            confidence=0.99,
+            score=0.99,
         )
         assert tag.label == "PERSON"
         assert tag.text == "John Smith"
         assert tag.start == 0
         assert tag.end == 10
-        assert tag.source == "spacy"
-        assert tag.confidence == 0.99
+        assert tag.score == 0.99
 
     def test_tags_to_json_serializes_correctly(self):
         from app.llm.ner_tagger import NerTag, tags_to_json
         import json
         tags = [
-            NerTag(label="PERSON", text="Alice", start=0, end=5, source="spacy", confidence=1.0),
-            NerTag(label="ORGANIZATION", text="Acme", start=10, end=13, source="spacy", confidence=0.95),
+            NerTag(label="PERSON", text="Alice", start=0, end=5, score=1.0),
+            NerTag(label="ORGANIZATION", text="Acme", start=10, end=13, score=0.95),
         ]
         serialized = tags_to_json(tags)
         parsed = json.loads(serialized)
@@ -226,7 +224,7 @@ class TestNerTagSchema:
     def test_json_to_tags_roundtrips(self):
         from app.llm.ner_tagger import NerTag, tags_to_json, json_to_tags
         tags = [
-            NerTag(label="LOCATION", text="NYC", start=0, end=3, source="spacy", confidence=0.9),
+            NerTag(label="LOCATION", text="NYC", start=0, end=3, score=0.9),
         ]
         roundtrip = json_to_tags(tags_to_json(tags))
         assert len(roundtrip) == 1
@@ -259,11 +257,41 @@ class TestCitationRegex:
         tags = _run_regex_citations("This is plain text with no citations.")
         assert tags == []
 
-    def test_citation_tags_have_high_confidence(self):
+    def test_citation_tags_have_high_score(self):
         from app.llm.ner_tagger import _run_regex_citations
         tags = _run_regex_citations("See [2021] SGHC 45 at para 12.")
         for tag in tags:
-            assert tag.confidence >= 0.95
+            assert tag.score >= 0.95
+
+
+    def test_ner_tag_has_exactly_five_fields(self):
+        """NerTag must have exactly {label, text, start, end, score} per spec 14-ner-pipeline.md."""
+        from app.llm.ner_tagger import NerTag
+        import dataclasses
+        field_names = {f.name for f in dataclasses.fields(NerTag)}
+        assert field_names == {"label", "text", "start", "end", "score"}, (
+            f"NerTag fields must be {{label, text, start, end, score}}, got {field_names}"
+        )
+
+    def test_ner_tag_json_has_no_source_field(self):
+        """Serialized NerTag JSON must NOT contain a 'source' key (spec compliance)."""
+        from app.llm.ner_tagger import NerTag, tags_to_json
+        import json
+        tag = NerTag(label="PERSON", text="Test", start=0, end=4, score=0.9)
+        parsed = json.loads(tags_to_json([tag]))
+        assert "source" not in parsed[0], (
+            "NerTag JSON must not contain 'source' field per spec 14-ner-pipeline.md"
+        )
+
+    def test_regex_citation_tags_have_no_source_field(self):
+        """Regex-generated tags must not have source field in serialized JSON."""
+        from app.llm.ner_tagger import _run_regex_citations, tags_to_json
+        import json
+        tags = _run_regex_citations("[2021] SGCA 1")
+        if tags:
+            parsed = json.loads(tags_to_json(tags))
+            for t in parsed:
+                assert "source" not in t
 
 
 class TestNERBatching:

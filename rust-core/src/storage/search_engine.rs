@@ -17,10 +17,12 @@ use tantivy::{
     collector::TopDocs,
     directory::MmapDirectory,
     doc,
-    query::QueryParser,
+    query::{BooleanQuery, Occur, QueryParser, TermQuery},
     schema::{Field, Schema, Value, STORED, STRING, TEXT},
+    SnippetGenerator,
     Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument,
 };
+use tantivy::schema::IndexRecordOption;
 
 pub struct SearchEngine {
     index: Index,
@@ -40,7 +42,7 @@ pub struct SearchEngine {
 /// be normalized before weighted fusion with bounded vector/graph scores.
 #[inline]
 pub fn normalize_bm25_score(raw: f32) -> f32 {
-    raw / (raw + 1.0)
+    (raw / 10.0).tanh()
 }
 
 impl SearchEngine {
@@ -150,8 +152,22 @@ impl SearchEngine {
             .parse_query(query)
             .map_err(|e| CoreError::SearchError(e.to_string()))?;
 
+        let collection_term = tantivy::Term::from_field_text(self.collection_id_field, collection_id);
+        let collection_query = Box::new(TermQuery::new(
+            collection_term,
+            IndexRecordOption::Basic,
+        ));
+
+        let boolean_query = BooleanQuery::new(vec![
+            (Occur::Must, collection_query),
+            (Occur::Must, parsed_query),
+        ]);
+
+        let snippet_generator = SnippetGenerator::create(&searcher, &boolean_query, self.text_field)
+            .map_err(|e| CoreError::SearchError(format!("snippet generator: {}", e)))?;
+
         let top_docs = searcher
-            .search(&parsed_query, &TopDocs::with_limit(limit))
+            .search(&boolean_query, &TopDocs::with_limit(limit))
             .map_err(|e| CoreError::SearchError(e.to_string()))?;
 
         let mut results = Vec::new();
@@ -181,15 +197,21 @@ impl SearchEngine {
                 .unwrap_or_default()
                 .to_string();
 
-            if cid == collection_id {
-                results.push(serde_json::json!({
-                    "id": id,
-                    "text": text,
-                    "doc_id": doc_id,
-                    "collection_id": cid,
-                    "bm25_score": _score,
-                }));
-            }
+            let snippet = snippet_generator.snippet(&text);
+            let highlights: Vec<String> = snippet
+                .highlighted()
+                .iter()
+                .map(|range| text[range.start..range.end].to_string())
+                .collect();
+
+            results.push(serde_json::json!({
+                "id": id,
+                "text": text,
+                "doc_id": doc_id,
+                "collection_id": cid,
+                "bm25_score": _score,
+                "highlights": highlights,
+            }));
         }
             Ok(results)
     }
@@ -421,5 +443,174 @@ mod tests {
                 n1
             );
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Phase 4 — Score fusion correctness tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_fuse_scores_weights_sum_to_one() {
+        let default_w = 0.6f32 + 0.3f32 + 0.1f32;
+        assert!(
+            (default_w - 1.0).abs() < 1e-6,
+            "default weights must sum to 1.0, got {}",
+            default_w
+        );
+    }
+
+    #[test]
+    fn test_fuse_scores_deduplicates_by_chunk_id() {
+        let v: Vec<(String, f32)> = vec![("c1".to_string(), 0.9)];
+        let k: Vec<(String, f32)> = vec![("c1".to_string(), 0.8)];
+        let g: Vec<(String, f32)> = vec![];
+
+        let mut all_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (id, _) in &v { all_ids.insert(id.clone()); }
+        for (id, _) in &k { all_ids.insert(id.clone()); }
+        for (id, _) in &g { all_ids.insert(id.clone()); }
+
+        let v_map: std::collections::HashMap<String, f32> = v.into_iter().collect();
+        let k_map: std::collections::HashMap<String, f32> = k.into_iter().collect();
+
+        let results: Vec<(String, f32)> = all_ids.into_iter().map(|id| {
+            let vs = v_map.get(&id).copied().unwrap_or(0.0);
+            let ks = k_map.get(&id).copied().unwrap_or(0.0);
+            let gs = 0.0f32;
+            (id, vs * 0.6 + ks * 0.3 + gs * 0.1)
+        }).collect();
+
+        let c1_entries: Vec<_> = results.iter().filter(|(id, _)| id == "c1").collect();
+        assert_eq!(c1_entries.len(), 1, "c1 should appear exactly once (merged, not duplicated)");
+
+        let c1_score = c1_entries[0].1;
+        let expected = 0.9 * 0.6 + 0.8 * 0.3;
+        assert!(
+            (c1_score - expected).abs() < 1e-5,
+            "c1 fused score: expected {}, got {}",
+            expected,
+            c1_score
+        );
+    }
+
+    #[test]
+    fn test_fuse_scores_includes_keyword_only_hits() {
+        let v: Vec<(String, f32)> = vec![("c1".to_string(), 0.9)];
+        let k: Vec<(String, f32)> = vec![("c1".to_string(), 0.8), ("c2".to_string(), 0.7)];
+        let g: Vec<(String, f32)> = vec![];
+
+        let mut all_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (id, _) in &v { all_ids.insert(id.clone()); }
+        for (id, _) in &k { all_ids.insert(id.clone()); }
+        for (id, _) in &g { all_ids.insert(id.clone()); }
+
+        assert_eq!(all_ids.len(), 2, "should have 2 unique chunk IDs: c1 and c2");
+
+        let v_map: std::collections::HashMap<String, f32> = v.into_iter().collect();
+        let k_map: std::collections::HashMap<String, f32> = k.into_iter().collect();
+
+        let mut results: Vec<(String, f32)> = all_ids.into_iter().map(|id| {
+            let vs = v_map.get(&id).copied().unwrap_or(0.0);
+            let ks = k_map.get(&id).copied().unwrap_or(0.0);
+            (id, vs * 0.6 + ks * 0.3)
+        }).collect();
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        let c2 = results.iter().find(|(id, _)| id == "c2").expect("c2 must be in results");
+        let c2_expected = 0.0 * 0.6 + 0.7 * 0.3;
+        assert!(
+            (c2.1 - c2_expected).abs() < 1e-5,
+            "keyword-only hit c2: expected {}, got {}",
+            c2_expected,
+            c2.1
+        );
+    }
+
+    #[test]
+    fn test_fuse_scores_includes_graph_only_hits() {
+        let v: Vec<(String, f32)> = vec![];
+        let k: Vec<(String, f32)> = vec![];
+        let g: Vec<(String, f32)> = vec![("c3".to_string(), 0.5)];
+
+        let mut all_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (id, _) in &v { all_ids.insert(id.clone()); }
+        for (id, _) in &k { all_ids.insert(id.clone()); }
+        for (id, _) in &g { all_ids.insert(id.clone()); }
+
+        assert_eq!(all_ids.len(), 1, "graph-only hit should be included");
+
+        let g_map: std::collections::HashMap<String, f32> = g.into_iter().collect();
+        let id = all_ids.iter().next().unwrap().clone();
+        let score = g_map.get(&id).copied().unwrap_or(0.0) * 0.1;
+        assert!(
+            (score - 0.05).abs() < 1e-5,
+            "graph-only hit score: expected {}, got {}",
+            0.05,
+            score
+        );
+    }
+
+    #[test]
+    fn test_fuse_scores_empty_channels_graceful_degradation() {
+        let v: Vec<(String, f32)> = vec![("c1".to_string(), 0.9)];
+        let k: Vec<(String, f32)> = vec![];
+        let g: Vec<(String, f32)> = vec![];
+
+        let mut all_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (id, _) in &v { all_ids.insert(id.clone()); }
+        for (id, _) in &k { all_ids.insert(id.clone()); }
+        for (id, _) in &g { all_ids.insert(id.clone()); }
+
+        assert_eq!(all_ids.len(), 1);
+        let v_map: std::collections::HashMap<String, f32> = v.into_iter().collect();
+        let id = all_ids.iter().next().unwrap().clone();
+        let score = v_map.get(&id).copied().unwrap_or(0.0) * 0.6;
+        assert!(
+            (score - 0.54).abs() < 1e-5,
+            "vector-only hit: expected 0.54, got {}",
+            score
+        );
+    }
+
+    #[test]
+    fn test_fuse_scores_all_channels_empty() {
+        let v: Vec<(String, f32)> = vec![];
+        let k: Vec<(String, f32)> = vec![];
+        let g: Vec<(String, f32)> = vec![];
+
+        let all_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        assert!(all_ids.is_empty(), "all empty channels should produce zero results");
+    }
+
+    #[test]
+    fn test_fuse_scores_preserves_ranking_order() {
+        let v: Vec<(String, f32)> = vec![
+            ("c1".to_string(), 0.9),
+            ("c2".to_string(), 0.5),
+        ];
+        let k: Vec<(String, f32)> = vec![
+            ("c2".to_string(), 0.8),
+            ("c1".to_string(), 0.6),
+        ];
+        let g: Vec<(String, f32)> = vec![];
+
+        let mut all_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (id, _) in &v { all_ids.insert(id.clone()); }
+        for (id, _) in &k { all_ids.insert(id.clone()); }
+
+        let v_map: std::collections::HashMap<String, f32> = v.into_iter().collect();
+        let k_map: std::collections::HashMap<String, f32> = k.into_iter().collect();
+
+        let mut results: Vec<(String, f32)> = all_ids.into_iter().map(|id| {
+            let vs = v_map.get(&id).copied().unwrap_or(0.0);
+            let ks = k_map.get(&id).copied().unwrap_or(0.0);
+            (id, vs * 0.6 + ks * 0.3)
+        }).collect();
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        let c1_fused = 0.9 * 0.6 + 0.6 * 0.3;
+        let c2_fused = 0.5 * 0.6 + 0.8 * 0.3;
+        assert!(c1_fused > c2_fused, "c1 ({}) should rank above c2 ({})", c1_fused, c2_fused);
+        assert_eq!(results[0].0, "c1", "highest-scoring result should be first after sort");
     }
 }

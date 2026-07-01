@@ -30,6 +30,9 @@ fn make_graph_node(label: &str, node_type: NodeType, aliases: Vec<&str>, cid: Uu
         ontology_class: None,
         properties: HashMap::new(),
         collection_id: cid,
+        display_label: None,
+        dedup_key: None,
+        doc_origins: vec![],
         created_at: None,
         updated_at: None,
     }

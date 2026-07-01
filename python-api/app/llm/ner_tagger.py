@@ -76,12 +76,11 @@ ALL_NER_LABELS: list[str] = list(dict.fromkeys(list(SPACY_TO_CANONICAL.values())
 
 @dataclass
 class NerTag:
-    label: str            # canonical label e.g. "PERSON", "LEGISLATION_TITLE"
-    text: str             # extracted text span
-    start: int            # char offset in chunk (-1 if not locatable)
-    end: int              # char offset in chunk (-1 if not locatable)
-    source: str           # "spacy" | "llm"
-    confidence: float     # 0.0–1.0
+    label: str
+    text: str
+    start: int
+    end: int
+    score: float
 
 
 # ---------------------------------------------------------------------------
@@ -122,8 +121,7 @@ def _run_regex_citations(text: str) -> list[NerTag]:
                 text=m.group(0).strip(),
                 start=m.start(),
                 end=m.end(),
-                source="regex",
-                confidence=0.95,
+                score=0.95,
             ))
     tags.sort(key=lambda t: t.start)
     return tags
@@ -180,7 +178,7 @@ async def _get_nlp():
     async with _nlp_lock:
         if _nlp is not None:
             return _nlp
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         _nlp = await loop.run_in_executor(None, _load_spacy_sync)
     return _nlp
 
@@ -205,8 +203,7 @@ def _run_spacy(nlp, text: str) -> list[NerTag]:
                 text=ent.text,
                 start=ent.start_char,
                 end=ent.end_char,
-                source="spacy",
-                confidence=1.0,
+                score=1.0,
             ))
         return tags
     except Exception as e:
@@ -243,12 +240,12 @@ def _find_all_offsets(text: str, span: str) -> list[tuple[int, int]]:
 
 
 def _resolve_llm_spans(chunk_text: str, llm_ner_spans: list[dict]) -> list[NerTag]:
-    """Convert LLM-returned {text, label, confidence} dicts into NerTag with offsets."""
+    """Convert LLM-returned {text, label, score} dicts into NerTag with offsets."""
     tags: list[NerTag] = []
     for span in llm_ner_spans:
         label = span.get("label", "")
         text = span.get("text", "").strip()
-        confidence = float(span.get("confidence", 0.8))
+        score = float(span.get("confidence", span.get("score", 0.8)))
         if not label or not text or label not in LEGAL_NER_LABELS:
             continue
         offsets = _find_all_offsets(chunk_text, text)
@@ -259,18 +256,15 @@ def _resolve_llm_spans(chunk_text: str, llm_ner_spans: list[dict]) -> list[NerTa
                     text=text,
                     start=start,
                     end=end,
-                    source="llm",
-                    confidence=confidence,
+                    score=score,
                 ))
         else:
-            # Span identified but not locatable (LLM paraphrased) — keep with sentinel offsets
             tags.append(NerTag(
                 label=label,
                 text=text,
                 start=-1,
                 end=-1,
-                source="llm",
-                confidence=confidence * 0.7,  # lower confidence since not verified
+                score=score * 0.7,
             ))
     return tags
 
@@ -314,7 +308,7 @@ async def tag_chunk(
 
     Args:
         chunk_text: raw chunk text (not contextual_text).
-        llm_ner_spans: list of {text, label, confidence} dicts from the LLM extraction call.
+        llm_ner_spans: list of {text, label, score} dicts from the LLM extraction call.
         use_regex_citations: whether to run the regex citation pass (default True).
 
     Returns:
@@ -322,7 +316,7 @@ async def tag_chunk(
     """
     nlp = await _get_nlp()
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     spacy_tags = await loop.run_in_executor(None, _run_spacy, nlp, chunk_text)
 
     llm_tags = _resolve_llm_spans(chunk_text, llm_ner_spans or [])

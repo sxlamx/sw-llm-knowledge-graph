@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, HTTPException, Depends, Request
 from app.auth.middleware import get_current_user
+from app.core.path_sanitizer import validate_folder_path
 from app.db.lancedb_client import (
     create_collection, get_collection, update_collection,
     delete_collection, list_collections,
@@ -39,6 +40,14 @@ async def create_new_collection(
     body: CollectionCreate,
     current_user: dict = Depends(get_current_user),
 ):
+    if body.folder_path:
+        try:
+            validate_folder_path(body.folder_path)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid folder_path: {e}")
+
     collection_id = str(uuid.uuid4())
     data = {
         "id": collection_id,

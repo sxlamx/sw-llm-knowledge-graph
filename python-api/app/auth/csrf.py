@@ -12,6 +12,16 @@ CSRF_HEADER_NAME = "X-CSRF-Token"
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
+CSRF_EXEMPT_PATHS = {
+    "/api/v1/auth/google",
+    "/api/v1/auth/google/redirect",
+    "/api/v1/auth/google/exchange",
+    "/api/v1/auth/refresh",
+    "/api/v1/auth/logout",
+    "/metrics",
+    "/health",
+}
+
 
 async def csrf_middleware(request: Request, call_next):
     """CSRF protection middleware.
@@ -24,6 +34,9 @@ async def csrf_middleware(request: Request, call_next):
       - Return 403 if token missing or mismatched
     """
     if request.method in SAFE_METHODS:
+        return await call_next(request)
+    
+    if request.url.path in CSRF_EXEMPT_PATHS:
         return await call_next(request)
     
     csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME)

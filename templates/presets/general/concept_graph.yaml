@@ -1,0 +1,56 @@
+name: concept_graph
+type: graph
+language:
+  - en
+domain: general
+description: "Conceptual knowledge graph — theories, principles, methods, and their relationships"
+entity_schema:
+  fields:
+    - name: name
+      type: string
+      description: "The canonical name of the concept"
+      required: true
+    - name: entity_type
+      type: string
+      description: "Type: concept, theory, principle, method, tool"
+      required: true
+    - name: definition
+      type: string
+      description: "A concise definition of the concept"
+      required: false
+  key: "{name}"
+  display_label: "{name} ({entity_type})"
+relation_schema:
+  fields:
+    - name: source
+      type: string
+      description: "The source concept"
+      required: true
+    - name: target
+      type: string
+      description: "The target concept"
+      required: true
+    - name: predicate
+      type: string
+      description: "Relationship: is_a, part_of, causes, related_to, contradicts"
+      required: true
+    - name: context
+      type: string
+      description: "Context for the conceptual relationship"
+      required: false
+  key: "{source}|{predicate}|{target}"
+  source_field: source
+  target_field: target
+  display_label: "{predicate}"
+extraction:
+  mode: two_stage
+  method: two_stage
+  node_prompt_extra: "Extract conceptual entities: theories, principles, methods, tools, and abstract concepts. Provide a concise definition for each concept extracted."
+  edge_prompt_extra: "Extract conceptual relationships: classification (is_a), composition (part_of), causation (causes), association (related_to), and opposition (contradicts). Only extract relationships that are explicitly stated or clearly implied by the text."
+  merge_strategy_nodes: field_overwrite
+  merge_strategy_edges: keep_first
+identifiers:
+  entity_key: "{name}"
+  relation_key: "{source}|{predicate}|{target}"
+  relation_source: source
+  relation_target: target

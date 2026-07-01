@@ -25,6 +25,7 @@ NO_AUTH_PATHS = {
     "/api/v1/auth/google/redirect",
     "/api/v1/auth/google/exchange",
     "/api/v1/auth/refresh",
+    "/metrics",
 }
 
 _AUTH_RATE_LIMIT_PATHS = {

@@ -1,0 +1,28 @@
+name: set
+type: set
+language:
+  - en
+domain: general
+description: "Unordered set extraction — extracts unique items with deduplication by key"
+entity_schema:
+  fields:
+    - name: name
+      type: string
+      description: "The unique item name or identifier"
+      required: true
+    - name: description
+      type: string
+      description: "A brief description of the item"
+      required: false
+    - name: category
+      type: string
+      description: "Optional grouping category"
+      required: false
+  key: "{name}"
+  display_label: "{name}"
+extraction:
+  mode: one_stage
+  method: standard
+  node_prompt_extra: "Extract each unique item as an entity. Deduplicate by name."
+  merge_strategy_nodes: exact
+  merge_strategy_edges: exact

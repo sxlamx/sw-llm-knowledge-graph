@@ -412,6 +412,28 @@ class TestNERPass:
         from app.pipeline.ingest_worker import _NER_CONCURRENCY
         assert _NER_CONCURRENCY == 16
 
+    async def test_ner_pass_propagates_runtime_error(self, monkeypatch):
+        """_run_ner_pass must propagate RuntimeError from check_ner_ready.
+
+        LESSONS.md: If en_core_web_trf is missing, raise an error and fail loudly.
+        The outer try/except must NOT swallow this RuntimeError.
+        """
+        from app.pipeline.ingest_worker import _run_ner_pass
+
+        async def mock_check_ner_ready():
+            raise RuntimeError(
+                "spaCy model 'en_core_web_trf' is not installed. "
+                "Run: python -m spacy download en_core_web_trf"
+            )
+
+        monkeypatch.setattr(
+            "app.pipeline.ingest_worker.check_ner_ready",
+            mock_check_ner_ready,
+        )
+
+        with pytest.raises(RuntimeError, match="en_core_web_trf"):
+            await _run_ner_pass("col-1", "job-1")
+
     async def test_ner_pass_not_called_if_no_outdated_chunks(self, monkeypatch):
         """_run_ner_pass returns early when no outdated chunks exist."""
         import app.pipeline.ingest_worker as worker

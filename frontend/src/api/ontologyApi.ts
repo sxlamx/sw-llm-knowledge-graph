@@ -20,6 +20,12 @@ export interface Ontology {
   updated_at?: string;
 }
 
+export interface OntologyGenerateResponse {
+  proposal: Ontology;
+  applied: boolean;
+  message: string;
+}
+
 export const ontologyApi = api.injectEndpoints({
   endpoints: (builder) => ({
     getOntology: builder.query<Ontology, { collection_id: string }>({
@@ -41,11 +47,8 @@ export const ontologyApi = api.injectEndpoints({
         { type: 'Ontology', id: collection_id },
       ],
     }),
-    generateOntology: builder.mutation<Ontology, { collection_id: string }>({
+    generateOntology: builder.mutation<OntologyGenerateResponse, { collection_id: string }>({
       query: (body) => ({ url: '/ontology/generate', method: 'POST', body }),
-      invalidatesTags: (_result, _error, { collection_id }) => [
-        { type: 'Ontology', id: collection_id },
-      ],
     }),
   }),
 });

@@ -7,7 +7,8 @@
 //!   - `entity_resolution`: EntityResolver on a 200-node existing graph.
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use rand::{rngs::SmallRng, Rng, SeedableRng};
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
 use rust_core::graph::builder::{EntityResolver, build_graph_nodes};
 use rust_core::models::{EdgeType, ExtractedEntity, GraphEdge, GraphNode, KnowledgeGraph, NodeType};
 use std::collections::HashMap;
@@ -28,6 +29,9 @@ fn make_node(label: &str, cid: Uuid) -> GraphNode {
         ontology_class: None,
         properties: HashMap::new(),
         collection_id: cid,
+        display_label: None,
+        dedup_key: None,
+        doc_origins: vec![],
         created_at: None,
         updated_at: None,
     }
@@ -44,6 +48,13 @@ fn make_edge(src: Uuid, tgt: Uuid, cid: Uuid) -> GraphEdge {
         chunk_id: None,
         properties: HashMap::new(),
         collection_id: cid,
+        display_label: None,
+        dedup_key: None,
+        predicate: String::new(),
+        time: None,
+        location: None,
+        participants: None,
+        doc_origins: vec![],
     }
 }
 
@@ -183,6 +194,51 @@ fn bench_entity_resolution(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 6 — LanceDB chunk insert throughput benchmark
+// ---------------------------------------------------------------------------
+
+fn bench_insert_chunks_batch_throughput(c: &mut Criterion) {
+    use rust_core::index_manager::IndexManager;
+    use rust_core::models::ChunkRecord;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let im = IndexManager::new(tmp.path().to_str().unwrap()).unwrap();
+    let coll_id = Uuid::new_v4().to_string();
+
+    pyo3::prepare_freethreaded_python();
+    pyo3::Python::with_gil(|py| {
+        im.initialize_collection(py, &coll_id).unwrap();
+    });
+
+    let chunks: Vec<ChunkRecord> = (0..512)
+        .map(|i| ChunkRecord {
+            id: Uuid::new_v4(),
+            doc_id: Uuid::new_v4(),
+            collection_id: Uuid::parse_str(&coll_id).unwrap(),
+            text: format!("benchmark chunk {i} with enough words to be nontrivial"),
+            contextual_text: Some(format!("context for chunk {i}")),
+            embedding: Some(vec![0.05f32; 1024]),
+            position: i as i32,
+            token_count: 12,
+            page: Some(1),
+            topics: Some(vec!["bench".into()]),
+            created_at: Some(1700000000000i64),
+        })
+        .collect();
+
+    let chunks_json = serde_json::to_string(&chunks).unwrap();
+
+    c.bench_function("insert_chunks_batch_512_rows", |b| {
+        b.iter(|| {
+            pyo3::Python::with_gil(|py| {
+                let result = im.insert_chunks_batch(py, &coll_id, black_box(&chunks_json));
+                black_box(result.is_ok())
+            })
+        })
+    });
+}
+
+// ---------------------------------------------------------------------------
 
 criterion_group!(
     benches,
@@ -190,5 +246,6 @@ criterion_group!(
     bench_kg_insert_edges,
     bench_kg_json_serialise,
     bench_entity_resolution,
+    bench_insert_chunks_batch_throughput,
 );
 criterion_main!(benches);

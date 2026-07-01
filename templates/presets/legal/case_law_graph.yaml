@@ -1,0 +1,56 @@
+name: case_law_graph
+type: graph
+language:
+  - en
+domain: legal
+description: "Case law knowledge graph — parties, courts, statutes, and legal citations"
+entity_schema:
+  fields:
+    - name: name
+      type: string
+      description: "The canonical name of the legal entity (case name, party, statute, court)"
+      required: true
+    - name: entity_type
+      type: string
+      description: "Type: person, court, statute, case, organization, concept"
+      required: true
+    - name: description
+      type: string
+      description: "Brief description of the legal entity"
+      required: false
+  key: "{name}"
+  display_label: "{name} ({entity_type})"
+relation_schema:
+  fields:
+    - name: source
+      type: string
+      description: "The source legal entity"
+      required: true
+    - name: target
+      type: string
+      description: "The target legal entity"
+      required: true
+    - name: predicate
+      type: string
+      description: "Relationship: cited, overruled, distinguished, affirmed, applied, interpreted"
+      required: true
+    - name: context
+      type: string
+      description: "Surrounding text context for the legal relationship"
+      required: false
+  key: "{source}|{predicate}|{target}"
+  source_field: source
+  target_field: target
+  display_label: "{predicate}"
+extraction:
+  mode: two_stage
+  method: two_stage
+  node_prompt_extra: "Extract legal entities: cases, parties, courts, statutes, and legal concepts. Use standard legal citations when available (e.g., 'Roe v. Wade', '410 U.S. 113'). Distinguish between a case name and a party name."
+  edge_prompt_extra: "Only extract explicitly stated legal relationships. Use standard legal predicates: cited, overruled, distinguished, affirmed, applied, interpreted. Do not infer relationships that are not directly stated in the text."
+  merge_strategy_nodes: llm_prefer_first
+  merge_strategy_edges: keep_first
+identifiers:
+  entity_key: "{name}"
+  relation_key: "{source}|{predicate}|{target}"
+  relation_source: source
+  relation_target: target

@@ -398,3 +398,117 @@ class TestExportGraph:
             )
 
         assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Canonical entity_type tests
+# ---------------------------------------------------------------------------
+
+class TestCanonicalEntityTypes:
+    async def test_node_entity_type_is_not_spacy_shorthand(self, app):
+        with (
+            patch("app.routers.graph.get_collection", new_callable=AsyncMock,
+                  return_value=FAKE_COLLECTION),
+            patch("app.routers.graph.get_index_manager", return_value=None),
+            patch("app.routers.graph.get_graph_node", new_callable=AsyncMock,
+                  return_value={**FAKE_NODE_1, "entity_type": "ORGANIZATION"}),
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.get(
+                    f"/graph/nodes/{NODE_ID_1}?collection_id={COLLECTION_ID}"
+                )
+
+        assert response.status_code == 200
+        entity_type = response.json()["entity_type"]
+        assert entity_type not in ("ORG", "GPE", "LOC", "FAC", "NORP"), \
+            f"Non-canonical entity_type: {entity_type}"
+
+    async def test_node_summary_never_returns_502(self, app):
+        with (
+            patch("app.routers.graph.get_collection", new_callable=AsyncMock,
+                  return_value=FAKE_COLLECTION),
+            patch("app.routers.graph.get_graph_node", new_callable=AsyncMock,
+                  return_value=FAKE_NODE_1),
+            patch("app.config.get_settings") as mock_settings,
+        ):
+            settings = mock_settings.return_value
+            settings.ollama_cloud_base_url = ""
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.get(
+                    f"/graph/nodes/{NODE_ID_1}/summary?collection_id={COLLECTION_ID}"
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "summary" in data
+        assert len(data["summary"]) > 0
+
+    async def test_node_summary_uses_canonical_entity_type(self, app):
+        with (
+            patch("app.routers.graph.get_collection", new_callable=AsyncMock,
+                  return_value=FAKE_COLLECTION),
+            patch("app.routers.graph.get_graph_node", new_callable=AsyncMock,
+                  return_value={**FAKE_NODE_1, "entity_type": "PERSON"}),
+            patch("app.config.get_settings") as mock_settings,
+        ):
+            settings = mock_settings.return_value
+            settings.ollama_cloud_base_url = ""
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.get(
+                    f"/graph/nodes/{NODE_ID_1}/summary?collection_id={COLLECTION_ID}"
+                )
+
+        assert response.status_code == 200
+        summary = response.json()["summary"]
+        assert "PERSON" in summary, f"Expected canonical PERSON in fallback, got: {summary}"
+
+    async def test_delete_edge_writes_feedback(self, app):
+        with (
+            patch("app.routers.graph.get_collection", new_callable=AsyncMock,
+                  return_value=FAKE_COLLECTION),
+            patch("app.routers.graph.get_graph_edge", new_callable=AsyncMock,
+                  return_value=FAKE_EDGE),
+            patch("app.routers.graph.delete_graph_edge", new_callable=AsyncMock),
+            patch("app.routers.graph.get_index_manager", return_value=None),
+            patch("app.routers.graph.insert_user_feedback", new_callable=AsyncMock) as mock_feedback,
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.delete(
+                    f"/graph/edges/{EDGE_ID_1}?collection_id={COLLECTION_ID}"
+                )
+
+        assert response.status_code == 204
+        mock_feedback.assert_called_once()
+        fb = mock_feedback.call_args[0][0]
+        assert fb["action"] == "delete_edge"
+        assert fb["entity_type"] == "node_edit"
+
+    async def test_subgraph_includes_seed_node(self, app):
+        with (
+            patch("app.routers.graph.get_collection", new_callable=AsyncMock,
+                  return_value=FAKE_COLLECTION),
+            patch("app.routers.graph.get_index_manager", return_value=None),
+            patch("app.routers.graph.list_graph_nodes", new_callable=AsyncMock,
+                  return_value=[FAKE_NODE_1, FAKE_NODE_2]),
+            patch("app.routers.graph.list_graph_edges", new_callable=AsyncMock,
+                  return_value=[FAKE_EDGE]),
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.get(
+                    f"/graph/subgraph?collection_id={COLLECTION_ID}&node_id={NODE_ID_1}&depth=1"
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        node_ids = [n["id"] for n in data["nodes"]]
+        assert NODE_ID_1 in node_ids, "Seed node must be included in subgraph"

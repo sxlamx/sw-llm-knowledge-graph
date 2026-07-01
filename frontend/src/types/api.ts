@@ -53,6 +53,8 @@ export interface IngestStartRequest {
     max_depth?: number;
     chunk_size_tokens?: number;
     chunk_overlap_tokens?: number;
+    extract_entities?: boolean;
+    template?: string;
   };
 }
 

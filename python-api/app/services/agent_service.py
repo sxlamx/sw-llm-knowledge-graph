@@ -5,7 +5,6 @@ import json
 import logging
 from typing import AsyncGenerator, Optional
 
-from app.config import get_settings
 from app.db.lancedb_client import (
     list_graph_nodes,
     list_graph_edges,
@@ -13,14 +12,8 @@ from app.db.lancedb_client import (
     vector_search,
 )
 from app.llm.embedder import embed_texts
+from app.llm.ollama_client import call_ollama_cloud, OllamaCloudError
 
-
-def _llm_client():
-    from openai import AsyncOpenAI
-    s = get_settings()
-    return AsyncOpenAI(base_url=s.ollama_cloud_base_url, api_key=s.ollama_cloud_api_key or "sk-placeholder")
-
-settings = get_settings()
 logger = logging.getLogger(__name__)
 
 MAX_HOPS = 4
@@ -227,8 +220,7 @@ async def run_agent(
 
         # --- Reasoning step: should we continue? ---
         reasoning_context = _truncate_context("\n\n".join(context_parts))
-        reasoning_prompt = (
-            f"You are a graph-based reasoning agent.\n"
+        reasoning_user_prompt = (
             f"Query: {query}\n\n"
             f"Context gathered so far:\n{reasoning_context}\n\n"
             f"Based on the context above, can you fully answer the query? "
@@ -237,21 +229,17 @@ async def run_agent(
 
         sufficient = False
         try:
-            client = _llm_client()
-            resp = await client.chat.completions.create(
-                model=settings.ollama_cloud_model,
-                messages=[{"role": "user", "content": reasoning_prompt}],
+            response = await call_ollama_cloud(
+                system_prompt="You are a graph-based reasoning agent.",
+                user_prompt=reasoning_user_prompt,
                 max_tokens=200,
                 temperature=0.0,
                 response_format={"type": "json_object"},
             )
-            raw = resp.choices[0].message.content or "{}"
-            parsed = json.loads(raw)
+            parsed = json.loads(response["content"])
             sufficient = bool(parsed.get("sufficient", False))
-            reasoning_note = parsed.get("reasoning", "")
-        except Exception as exc:
+        except (OllamaCloudError, json.JSONDecodeError) as exc:
             logger.warning(f"Agent reasoning step failed: {exc}")
-            reasoning_note = ""
 
         yield {
             "type": "observation",
@@ -277,34 +265,19 @@ async def run_agent(
     yield {"type": "thought", "hop": hop + 1, "content": "Synthesising final answer..."}
 
     final_context = _truncate_context("\n\n".join(context_parts))
-    synthesis_prompt = (
-        f"You are a knowledge graph assistant. Answer the user's query using ONLY the "
-        f"context extracted from the knowledge graph below. Be precise and cite entity "
-        f"names when relevant. If the context is insufficient, say so clearly.\n\n"
-        f"Query: {query}\n\n"
-        f"Context:\n{final_context}\n\n"
-        f"Answer:"
-    )
 
     answer_text = ""
     try:
-        client = _llm_client()
-        stream = await client.chat.completions.create(
-            model=settings.ollama_cloud_model,
-            messages=[{"role": "user", "content": synthesis_prompt}],
+        response = await call_ollama_cloud(
+            system_prompt="You are a knowledge graph assistant. Answer the user's query using ONLY the context extracted from the knowledge graph below. Be precise and cite entity names when relevant. If the context is insufficient, say so clearly.",
+            user_prompt=f"Query: {query}\n\nContext:\n{final_context}\n\nAnswer:",
             max_tokens=1024,
             temperature=0.2,
-            stream=True,
         )
-        async for chunk in stream:
-            delta = chunk.choices[0].delta.content or ""
-            if delta:
-                answer_text += delta
-                yield {"type": "token", "content": delta}
-    except Exception as exc:
+        answer_text = response["content"]
+    except (OllamaCloudError, Exception) as exc:
         logger.error(f"Agent synthesis failed: {exc}")
         answer_text = "I encountered an error generating the final answer."
-        yield {"type": "token", "content": answer_text}
 
     yield {
         "type": "answer",

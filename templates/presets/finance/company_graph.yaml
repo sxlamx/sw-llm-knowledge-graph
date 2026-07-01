@@ -1,0 +1,56 @@
+name: company_graph
+type: graph
+language:
+  - en
+domain: finance
+description: "Corporate knowledge graph — companies, people, products, and market relationships"
+entity_schema:
+  fields:
+    - name: name
+      type: string
+      description: "The canonical name of the financial entity"
+      required: true
+    - name: entity_type
+      type: string
+      description: "Type: company, person, product, market, currency"
+      required: true
+    - name: description
+      type: string
+      description: "Brief description of the financial entity"
+      required: false
+  key: "{name}"
+  display_label: "{name} ({entity_type})"
+relation_schema:
+  fields:
+    - name: source
+      type: string
+      description: "The source financial entity"
+      required: true
+    - name: target
+      type: string
+      description: "The target financial entity"
+      required: true
+    - name: predicate
+      type: string
+      description: "Relationship: owns, invests_in, supplies, competes_with, acquired"
+      required: true
+    - name: context
+      type: string
+      description: "Surrounding text context"
+      required: false
+  key: "{source}|{predicate}|{target}"
+  source_field: source
+  target_field: target
+  display_label: "{predicate}"
+extraction:
+  mode: two_stage
+  method: two_stage
+  node_prompt_extra: "Extract financial entities: companies, key people (CEO, CFO, board members), products, markets, and currencies. Use official company names and tickers when available."
+  edge_prompt_extra: "Extract financial relationships: ownership, investment, supply chain, competition, and acquisitions. Include ownership percentages and deal values when stated."
+  merge_strategy_nodes: llm_prefer_first
+  merge_strategy_edges: keep_first
+identifiers:
+  entity_key: "{name}"
+  relation_key: "{source}|{predicate}|{target}"
+  relation_source: source
+  relation_target: target

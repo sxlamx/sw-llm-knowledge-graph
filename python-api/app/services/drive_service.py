@@ -117,7 +117,7 @@ async def run_drive_ingest_pipeline(
     from app.llm.embedder import embed_texts
     from app.llm.extractor import generate_doc_summary, generate_contextual_prefix, extract_from_chunk
     from app.pipeline.job_manager import get_job_manager
-    from app.pipeline.ingest_worker import _extract_graph, _flush_chunks, _flush_graph
+    from app.pipeline.ingest_worker import _extract_graph, _extract_graph_with_template, _flush_chunks, _flush_graph
     from app.core.rust_bridge import get_index_manager, get_ingestion_engine, rust_init_collection_async
 
     jm = get_job_manager()
@@ -148,7 +148,7 @@ async def run_drive_ingest_pipeline(
     all_nodes: list[dict] = []
     all_edges: list[dict] = []
     processed = 0
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         for file_meta in supported:
@@ -161,7 +161,7 @@ async def run_drive_ingest_pipeline(
             mime = file_meta.get("mimeType", "")
             current_hash = drive_hash(file_meta)
 
-            jm.emit(job_id, {"type": "progress", "job_id": job_id, "processed": processed,
+            await jm.emit(job_id, {"type": "progress", "job_id": job_id, "processed": processed,
                               "total": total, "current_file": fname, "progress": processed / max(total, 1)})
 
             # Incremental sync: skip file if it hasn't changed since last ingest
@@ -273,7 +273,22 @@ async def run_drive_ingest_pipeline(
                         validator = get_ontology_validator()
                     except Exception:
                         pass
-                    ns, es = await _extract_graph(chunk_records, doc_uuid, collection_id, summary, validator)
+
+                    template_config = None
+                    if options.template:
+                        try:
+                            from app.services.template_gallery import TemplateGallery
+                            gallery = TemplateGallery.get_instance()
+                            template_config = gallery.get(options.template)
+                        except Exception:
+                            pass
+
+                    if template_config:
+                        ns, es, _ = await _extract_graph_with_template(
+                            chunk_records, collection_id, template_config, job_id=job_id
+                        )
+                    else:
+                        ns, es, _ = await _extract_graph(chunk_records, doc_uuid, collection_id, summary, validator)
                     all_nodes.extend(ns)
                     all_edges.extend(es)
 
@@ -305,7 +320,7 @@ async def run_drive_ingest_pipeline(
             "completed_at": int(datetime.utcnow().timestamp() * 1_000_000),
         },
     )
-    jm.emit(job_id, {"type": "completed", "job_id": job_id, "processed": processed, "total": total})
+    await jm.emit(job_id, {"type": "completed", "job_id": job_id, "processed": processed, "total": total})
 
 
 async def register_watch_channel(

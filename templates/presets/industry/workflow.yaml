@@ -1,0 +1,60 @@
+name: workflow
+type: graph
+language:
+  - en
+domain: industry
+description: "Workflow graph — steps, decisions, inputs, outputs, and dependencies"
+entity_schema:
+  fields:
+    - name: name
+      type: string
+      description: "The canonical name of the workflow element"
+      required: true
+    - name: entity_type
+      type: string
+      description: "Type: step, decision, input, output, resource"
+      required: true
+    - name: description
+      type: string
+      description: "Brief description of the workflow element"
+      required: false
+  key: "{name}"
+  display_label: "{name} ({entity_type})"
+relation_schema:
+  fields:
+    - name: source
+      type: string
+      description: "The source workflow element"
+      required: true
+    - name: target
+      type: string
+      description: "The target workflow element"
+      required: true
+    - name: predicate
+      type: string
+      description: "Relationship: followed_by, depends_on, produces, requires"
+      required: true
+    - name: condition
+      type: string
+      description: "Condition for the relationship (e.g., 'if approved', 'when stock available')"
+      required: false
+    - name: context
+      type: string
+      description: "Additional context"
+      required: false
+  key: "{source}|{predicate}|{target}"
+  source_field: source
+  target_field: target
+  display_label: "{predicate}"
+extraction:
+  mode: two_stage
+  method: two_stage
+  node_prompt_extra: "Extract workflow elements: process steps, decision points, inputs, outputs, and resources. Identify the type and purpose of each element."
+  edge_prompt_extra: "Extract workflow relationships: sequential flow (followed_by), dependencies (depends_on), data flow (produces, requires). Include conditions for decision branches. Only extract explicitly stated relationships."
+  merge_strategy_nodes: field_overwrite
+  merge_strategy_edges: keep_first
+identifiers:
+  entity_key: "{name}"
+  relation_key: "{source}|{predicate}|{target}"
+  relation_source: source
+  relation_target: target

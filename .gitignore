@@ -58,3 +58,5 @@ secrets/
 
 # Mac
 .DS_Store
+*.dSYM/
+*.bak

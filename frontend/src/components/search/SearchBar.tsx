@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Box,
   TextField,
@@ -14,6 +14,15 @@ import { useAppDispatch, useAppSelector } from '../../store';
 import { setSearchQuery, setSearchMode, SearchMode } from '../../store/slices/searchSlice';
 import { useGetSearchSuggestionsQuery } from '../../api/searchApi';
 
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedValue(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+  return debouncedValue;
+}
+
 const MODES: { value: SearchMode; label: string; tip: string }[] = [
   { value: 'hybrid', label: 'Hybrid', tip: 'Vector + BM25 + Graph' },
   { value: 'vector', label: 'Vector', tip: 'Semantic similarity' },
@@ -25,12 +34,13 @@ const SearchBar: React.FC = () => {
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
   const [inputValue, setInputValue] = useState('');
+  const debouncedQuery = useDebounce(inputValue, 300);
   const mode = useAppSelector((s) => s.search.mode);
   const activeCollectionId = useAppSelector((s) => s.collections.activeCollectionId);
 
   const { data: suggestions } = useGetSearchSuggestionsQuery(
-    { q: inputValue, collection_id: activeCollectionId ?? undefined },
-    { skip: inputValue.length < 2 }
+    { q: debouncedQuery, collection_id: activeCollectionId ?? undefined },
+    { skip: debouncedQuery.length < 2 }
   );
 
   const handleSearch = () => {

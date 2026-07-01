@@ -1,0 +1,63 @@
+name: hypergraph
+type: hypergraph
+language:
+  - en
+domain: general
+description: "Hypergraph extraction — entities, binary relations, and multi-participant hyperedges with temporal and spatial context"
+entity_schema:
+  fields:
+    - name: name
+      type: string
+      description: "The canonical name of the entity"
+      required: true
+    - name: entity_type
+      type: string
+      description: "The type of entity (person, organization, location, event, concept)"
+      required: true
+    - name: description
+      type: string
+      description: "A brief description of the entity"
+      required: false
+  key: "{name}"
+  display_label: "{name} ({entity_type})"
+relation_schema:
+  fields:
+    - name: predicate
+      type: string
+      description: "The relationship type or action"
+      required: true
+    - name: participants
+      type: list
+      description: "All participants in this hyperedge (source, target, and any additional)"
+      required: true
+    - name: time
+      type: string
+      description: "When the event or relationship occurred"
+      required: false
+    - name: location
+      type: string
+      description: "Where the event or relationship took place"
+      required: false
+    - name: context
+      type: string
+      description: "Surrounding text context"
+      required: false
+  key: "{predicate}|{participants}"
+  source_field: participants
+  target_field: participants
+  display_label: "{predicate} ({participants})"
+  participants_field: participants
+extraction:
+  mode: two_stage
+  method: two_stage
+  node_prompt_extra: "Extract all entities mentioned in the text."
+  edge_prompt_extra: "Extract all relationships, including those involving more than two participants. Include temporal and spatial context when available."
+  merge_strategy_nodes: exact
+  merge_strategy_edges: exact
+identifiers:
+  entity_key: "{name}"
+  relation_key: "{predicate}|{participants}"
+  relation_source: participants
+  relation_target: participants
+  time_field: time
+  location_field: location

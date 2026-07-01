@@ -71,15 +71,17 @@ pub fn find_shortest_path(
     graph: &KnowledgeGraph,
     from: Uuid,
     to: Uuid,
-    _max_depth: u32,
+    max_depth: u32,
 ) -> Option<Vec<PathStep>> {
     use std::collections::BinaryHeap;
 
     let mut dist: HashMap<Uuid, f32> = HashMap::new();
+    let mut depth_map: HashMap<Uuid, u32> = HashMap::new();
     let mut prev: HashMap<Uuid, (Uuid, Uuid)> = HashMap::new();
     let mut heap: BinaryHeap<(OrderedFloat<f32>, Uuid)> = BinaryHeap::new();
 
     dist.insert(from, 0.0);
+    depth_map.insert(from, 0);
     heap.push((OrderedFloat(0.0), from));
 
     while let Some((neg_cost, u)) = heap.pop() {
@@ -91,6 +93,11 @@ pub fn find_shortest_path(
             break;
         }
 
+        let current_depth = *depth_map.get(&u).unwrap_or(&0);
+        if current_depth >= max_depth {
+            continue;
+        }
+
         if let Some(neighbors) = graph.adjacency_out.get(&u) {
             for &(edge_id, v) in neighbors {
                 if let Some(edge) = graph.edges.get(&edge_id) {
@@ -98,6 +105,7 @@ pub fn find_shortest_path(
                     let new_cost = cost + edge_cost;
                     if new_cost < *dist.get(&v).unwrap_or(&f32::INFINITY) {
                         dist.insert(v, new_cost);
+                        depth_map.insert(v, current_depth + 1);
                         prev.insert(v, (u, edge_id));
                         heap.push((OrderedFloat(-new_cost), v));
                     }
@@ -251,6 +259,9 @@ mod tests {
             ontology_class: None,
             properties: HashMap::new(),
             collection_id: cid,
+            display_label: None,
+            dedup_key: None,
+            doc_origins: vec![],
             created_at: None,
             updated_at: None,
         }
@@ -267,6 +278,13 @@ mod tests {
             chunk_id: None,
             properties: HashMap::new(),
             collection_id: cid,
+            display_label: None,
+            dedup_key: None,
+            predicate: String::new(),
+            time: None,
+            location: None,
+            participants: None,
+            doc_origins: vec![],
         }
     }
 

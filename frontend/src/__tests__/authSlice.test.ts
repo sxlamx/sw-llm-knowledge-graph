@@ -2,10 +2,10 @@
  * Unit tests for authSlice — localStorage persistence via reducer actions.
  *
  * Verifies:
- * - setCredentials persists user and token to localStorage
- * - setAccessToken persists token to localStorage
- * - logout clears localStorage
- * - Initial state reads from localStorage when available
+ * - setCredentials persists user to localStorage (NOT accessToken — spec: memory only)
+ * - setAccessToken keeps token in memory only (NOT localStorage)
+ * - logout clears localStorage and memory
+ * - Initial state reads user from localStorage when available
  */
 import { describe, it, expect, vi } from 'vitest';
 import authReducer, { setCredentials, setAccessToken, logout } from '../store/slices/authSlice';
@@ -23,7 +23,7 @@ function createLocalStorageMock(initial: Record<string, string> = {}) {
 }
 
 describe('authSlice localStorage persistence', () => {
-  it('setCredentials persists accessToken to localStorage', () => {
+  it('setCredentials does NOT persist accessToken to localStorage (memory only per spec)', () => {
     const { mock } = createLocalStorageMock();
     Object.defineProperty(globalThis, 'localStorage', { value: mock });
 
@@ -32,7 +32,7 @@ describe('authSlice localStorage persistence', () => {
       user: { id: 'user-1', email: 'alice@example.com', name: 'Alice' },
     }));
 
-    expect(mock.setItem).toHaveBeenCalledWith('kg_access_token', 'test-token-abc');
+    expect(mock.setItem).not.toHaveBeenCalledWith('kg_access_token', expect.anything());
     expect(state.accessToken).toBe('test-token-abc');
     expect(state.isAuthenticated).toBe(true);
   });
@@ -49,28 +49,27 @@ describe('authSlice localStorage persistence', () => {
     expect(mock.setItem).toHaveBeenCalledWith('kg_user', expect.stringContaining('"id":"user-1"'));
   });
 
-  it('setAccessToken persists token to localStorage', () => {
+  it('setAccessToken keeps token in memory only (NOT localStorage)', () => {
     const { mock } = createLocalStorageMock();
     Object.defineProperty(globalThis, 'localStorage', { value: mock });
 
     const state = authReducer(undefined, setAccessToken('refreshed-token-xyz'));
 
-    expect(mock.setItem).toHaveBeenCalledWith('kg_access_token', 'refreshed-token-xyz');
+    expect(mock.setItem).not.toHaveBeenCalledWith('kg_access_token', expect.anything());
     expect(state.accessToken).toBe('refreshed-token-xyz');
     expect(state.isAuthenticated).toBe(true);
   });
 
-  it('logout removes both token and user from localStorage', () => {
+  it('logout removes user from localStorage but does NOT remove accessToken (it was never stored)', () => {
     const { mock } = createLocalStorageMock({
-      'kg_access_token': 'some-token',
       'kg_user': JSON.stringify({ id: 'u1', name: 'Test' }),
     });
     Object.defineProperty(globalThis, 'localStorage', { value: mock });
 
     const state = authReducer(undefined, logout());
 
-    expect(mock.removeItem).toHaveBeenCalledWith('kg_access_token');
     expect(mock.removeItem).toHaveBeenCalledWith('kg_user');
+    expect(mock.removeItem).not.toHaveBeenCalledWith('kg_access_token');
     expect(state.accessToken).toBeNull();
     expect(state.user).toBeNull();
     expect(state.isAuthenticated).toBe(false);
@@ -86,7 +85,7 @@ describe('authSlice localStorage persistence', () => {
     );
 
     expect(state.user).toEqual({ id: 'u1', email: 'a@b.com', name: 'Test' });
-    expect(mock.setItem).toHaveBeenCalledWith('kg_access_token', 'new-token');
+    expect(mock.setItem).not.toHaveBeenCalledWith('kg_access_token', expect.anything());
   });
 
   it('logout sets isAuthenticated to false', () => {

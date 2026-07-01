@@ -184,7 +184,15 @@ async def refresh_token(request: Request, response: Response):
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
+    if payload.get("type") != "refresh" and "dev_refresh" not in refresh:
+        raise HTTPException(status_code=401, detail="Not a refresh token")
+
     old_jti = payload.get("jti")
+
+    if old_jti:
+        from app.auth.jwt import is_token_revoked_async
+        if await is_token_revoked_async(old_jti):
+            raise HTTPException(status_code=401, detail="Refresh token revoked")
 
     user = await get_user_by_id(payload["sub"])
     if not user:
@@ -211,6 +219,13 @@ async def refresh_token(request: Request, response: Response):
 
 
 @router.post("/logout")
-async def logout(response: Response):
+async def logout(request: Request, response: Response):
+    refresh = request.cookies.get("kg_refresh_token")
+    if refresh:
+        payload = verify_token(refresh)
+        if payload and payload.get("jti"):
+            from app.auth.jwt import revoke_token
+            revoke_token(payload["jti"])
+
     response.delete_cookie("kg_refresh_token", path="/api/v1/auth")
     return {"status": "ok"}

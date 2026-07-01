@@ -16,6 +16,8 @@ Algorithm:
 import asyncio
 import json
 import logging
+import math
+import re
 import uuid
 from collections import defaultdict
 from datetime import datetime
@@ -45,11 +47,44 @@ ENTITY_TYPE_SCHEMA = {
 SKIP_LABELS = {"CARDINAL", "ORDINAL", "QUANTITY"}
 
 
+def _levenshtein(a: str, b: str) -> int:
+    n, m = len(a), len(b)
+    if n == 0:
+        return m
+    if m == 0:
+        return n
+    prev = list(range(m + 1))
+    for i in range(1, n + 1):
+        curr = [i] + [0] * m
+        for j in range(1, m + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            curr[j] = min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost)
+        prev = curr
+    return prev[m]
+
+
+def _cosine_similarity(v1: list[float], v2: list[float]) -> float:
+    if not v1 or not v2 or len(v1) != len(v2):
+        return 0.0
+    dot = sum(a * b for a, b in zip(v1, v2))
+    mag1 = math.sqrt(sum(a * a for a in v1))
+    mag2 = math.sqrt(sum(b * b for b in v2))
+    if mag1 == 0.0 or mag2 == 0.0:
+        return 0.0
+    return dot / (mag1 * mag2)
+
+
 def _normalize(text: str) -> str:
-    return " ".join(text.lower().split())
+    """Normalize text for entity matching — aligned with Rust normalize_name().
+
+    Lowercase, strip non-alphanumeric (except whitespace), collapse whitespace.
+    """
+    text = text.strip().lower()
+    text = re.sub(r'[^a-z0-9\s]', '', text)
+    return ' '.join(text.split())
 
 
-async def build_graph_from_ner(collection_id: str, min_chunk_freq: int = 2) -> dict:
+async def build_graph_from_ner(collection_id: str, min_chunk_freq: int = 2, job_id: str | None = None) -> dict:
     """
     Build or update knowledge graph nodes and edges from NER-tagged chunks.
 
@@ -114,11 +149,15 @@ async def build_graph_from_ner(collection_id: str, min_chunk_freq: int = 2) -> d
                         "chunk_ids": set(),
                         "confidence_sum": 0.0,
                         "count": 0,
+                        "aliases": [],
                     }
                 e = entity_map[key]
                 e["chunk_ids"].add(chunk_id)
                 e["confidence_sum"] += float(tag.get("score", 0.8))
                 e["count"] += 1
+                normalized_label = _normalize(text)
+                if normalized_label != _normalize(e["label"]) and text not in e["aliases"]:
+                    e["aliases"].append(text)
                 chunk_keys.append(key)
 
             for i in range(len(chunk_keys)):
@@ -145,10 +184,18 @@ async def build_graph_from_ner(collection_id: str, min_chunk_freq: int = 2) -> d
         key = (n.get("entity_type", ""), _normalize(n.get("label", "")))
         existing_map[key] = n
 
+    existing_embedding_map: dict[str, list[float]] = {}
+    for n in existing_nodes:
+        emb = n.get("embedding")
+        if emb:
+            existing_embedding_map[n["id"]] = emb
+
     now = int(datetime.utcnow().timestamp() * 1_000_000)
     node_records: list[dict] = []
     added_count = 0
     merged_count = 0
+
+    merge_updates: list[dict] = []
 
     for key, e in kept.items():
         chunk_ids = list(e["chunk_ids"])
@@ -157,26 +204,88 @@ async def build_graph_from_ner(collection_id: str, min_chunk_freq: int = 2) -> d
 
         if entity_key in existing_map:
             merged_count += 1
-        else:
-            node_records.append({
-                "id": e["id"],
+            existing = existing_map[entity_key]
+            existing_aliases = existing.get("aliases") or []
+            new_aliases = [a for a in (e.get("aliases") or []) if a not in existing_aliases]
+            merged_aliases = existing_aliases + new_aliases
+            existing_confidence = float(existing.get("confidence", 0.0))
+            merged_confidence = (existing_confidence + confidence) / 2.0
+            merge_updates.append({
+                "id": existing["id"],
                 "collection_id": collection_id,
-                "label": e["label"],
-                "entity_type": e["entity_type"],
-                "description": "",
-                "aliases": [],
-                "confidence": float(confidence),
-                "source_chunk_ids": chunk_ids,
-                "topics": [],
-                "properties": "{}",
-                "created_at": now,
+                "label": existing.get("label", e["label"]),
+                "entity_type": existing.get("entity_type", e["entity_type"]),
+                "description": existing.get("description") or "",
+                "aliases": merged_aliases,
+                "confidence": merged_confidence,
+                "source_chunk_ids": list(set((existing.get("source_chunk_ids") or []) + chunk_ids)),
+                "topics": existing.get("topics") or [],
+                "properties": existing.get("properties") or "{}",
+                "created_at": existing.get("created_at", now),
                 "updated_at": now,
             })
-            added_count += 1
+        else:
+            fuzzy_match = None
+            if e["entity_type"] in ENTITY_TYPE_SCHEMA:
+                for ex_key, ex_node in existing_map.items():
+                    if ex_key[0] != e["entity_type"]:
+                        continue
+                    dist = _levenshtein(_normalize(e["label"]), ex_key[1])
+                    if dist >= 3 or dist == 0:
+                        continue
+                    ex_emb = existing_embedding_map.get(ex_node["id"])
+                    if not ex_emb:
+                        continue
+                    from app.llm.embedder import embed_texts
+                    incoming_emb = (await embed_texts([e["label"]]))[0]
+                    sim = _cosine_similarity(incoming_emb, ex_emb)
+                    if sim > 0.92:
+                        fuzzy_match = ex_node
+                        break
 
-    logger.info(f"Writing {added_count} new nodes, {merged_count} already exist...")
+            if fuzzy_match:
+                merged_count += 1
+                existing_aliases = fuzzy_match.get("aliases") or []
+                new_aliases = [a for a in (e.get("aliases") or []) if a not in existing_aliases]
+                merged_aliases = existing_aliases + new_aliases
+                existing_confidence = float(fuzzy_match.get("confidence", 0.0))
+                merged_confidence = (existing_confidence + confidence) / 2.0
+                merge_updates.append({
+                    "id": fuzzy_match["id"],
+                    "collection_id": collection_id,
+                    "label": fuzzy_match.get("label", e["label"]),
+                    "entity_type": fuzzy_match.get("entity_type", e["entity_type"]),
+                    "description": fuzzy_match.get("description") or "",
+                    "aliases": merged_aliases,
+                    "confidence": merged_confidence,
+                    "source_chunk_ids": list(set((fuzzy_match.get("source_chunk_ids") or []) + chunk_ids)),
+                    "topics": fuzzy_match.get("topics") or [],
+                    "properties": fuzzy_match.get("properties") or "{}",
+                    "created_at": fuzzy_match.get("created_at", now),
+                    "updated_at": now,
+                })
+            else:
+                node_records.append({
+                    "id": e["id"],
+                    "collection_id": collection_id,
+                    "label": e["label"],
+                    "entity_type": e["entity_type"],
+                    "description": "",
+                    "aliases": e.get("aliases", []),
+                    "confidence": float(confidence),
+                    "source_chunk_ids": chunk_ids,
+                    "topics": [],
+                    "properties": "{}",
+                    "created_at": now,
+                    "updated_at": now,
+                })
+                added_count += 1
+
+    logger.info(f"Writing {added_count} new nodes, merging {merged_count} existing nodes...")
     if node_records:
         await upsert_graph_nodes(collection_id, node_records)
+    if merge_updates:
+        await upsert_graph_nodes(collection_id, merge_updates)
 
     kept_keys = set(kept.keys())
     edge_records: list[dict] = []
@@ -208,7 +317,7 @@ async def build_graph_from_ner(collection_id: str, min_chunk_freq: int = 2) -> d
     if im and node_records:
         try:
             import json as json_mod
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             rust_nodes = [
                 {
                     "id": n["id"],
@@ -220,6 +329,9 @@ async def build_graph_from_ner(collection_id: str, min_chunk_freq: int = 2) -> d
                     "ontology_class": n["entity_type"],
                     "properties": {},
                     "collection_id": collection_id,
+                    "display_label": None,
+                    "dedup_key": None,
+                    "doc_origins": [],
                     "created_at": None,
                     "updated_at": None,
                 }
@@ -232,7 +344,7 @@ async def build_graph_from_ner(collection_id: str, min_chunk_freq: int = 2) -> d
     if im and edge_records:
         try:
             import json as json_mod
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             rust_edges = [
                 {
                     "id": e["id"],
@@ -244,6 +356,8 @@ async def build_graph_from_ner(collection_id: str, min_chunk_freq: int = 2) -> d
                     "chunk_id": e.get("chunk_id"),
                     "properties": {},
                     "collection_id": collection_id,
+                    "predicate": e.get("relation_type", "co_occurrence"),
+                    "doc_origins": [],
                 }
                 for e in edge_records
             ]
@@ -252,6 +366,20 @@ async def build_graph_from_ner(collection_id: str, min_chunk_freq: int = 2) -> d
             logger.warning(f"Rust upsert_edges failed: {e}")
 
     logger.info(f"Done. Added: {added_count} nodes, {len(edge_records)} edges. Merged: {merged_count}")
+
+    if job_id:
+        try:
+            from app.pipeline.job_manager import get_job_manager
+            jm = get_job_manager()
+            await jm.emit(job_id, {
+                "type": "graph_update",
+                "collection_id": collection_id,
+                "added_nodes": added_count,
+                "merged_nodes": merged_count,
+                "added_edges": len(edge_records),
+            })
+        except Exception as e:
+            logger.warning(f"Failed to emit graph_update event: {e}")
 
     return {
         "added_nodes": added_count,

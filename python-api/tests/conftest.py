@@ -50,13 +50,14 @@ def mock_settings(monkeypatch):
         log_dir="/tmp/test-logs",
     )
     monkeypatch.setattr("app.config.get_settings", lambda: test_settings)
-    # Also patch module-level settings captured at import time
     monkeypatch.setattr("app.db.lancedb_client.settings", test_settings)
     monkeypatch.setattr("app.auth.jwt.settings", test_settings)
     monkeypatch.setattr("app.core.path_sanitizer.settings", test_settings)
     monkeypatch.setattr("app.routers.auth.settings", test_settings)
     monkeypatch.setattr("app.llm.embedder.settings", test_settings)
     monkeypatch.setattr("app.pipeline.ingest_worker.settings", test_settings)
+    monkeypatch.setattr("app.auth.google.settings", test_settings)
+    monkeypatch.setattr("app.auth.middleware.settings", test_settings)
     return test_settings
 
 

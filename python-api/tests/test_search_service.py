@@ -1,10 +1,19 @@
 """Tests for search_service — 3-channel hybrid search orchestration.
 
-Tests:
+Phase 3 tests:
   - Score fusion: weighted combination, deduplication, top-k limiting
   - BM25 normalization: sigmoid maps raw scores to [0, 1]
   - Channel timeouts: graceful degradation when a channel times out
   - embed_query is used (not embed_texts) for search queries
+
+Phase 4 tests:
+  - Score fusion includes keyword-only and graph-only hits
+  - Score fusion all channels empty returns empty (not error)
+  - Post-filter by topics removes non-matching results
+  - Post-filter by topics keeps results without topics field (optimistic)
+  - Embedding cache: _get_embedding checks Rust cache first
+  - Channel mode routing dispatches correctly
+  - Highlights from keyword channel are merged into fused results
 """
 
 import pytest
@@ -16,15 +25,14 @@ class TestScoreFusion:
 
     def test_fuse_results_deduplicates_by_chunk_id(self):
         from app.core.search_service import _fuse_results
-        from unittest.mock import MagicMock
 
         weights = {"vector": 0.6, "keyword": 0.3, "graph": 0.1}
-        vector = [({"chunk_id": "c1", "id": "c1", "vector_score": 0.9,
+        vector = [{"chunk_id": "c1", "id": "c1", "vector_score": 0.9,
                     "keyword_score": 0.0, "graph_proximity_score": 0.0,
-                    "doc_id": "", "text": "", "page": None, "topics": []})]
-        keyword = [({"chunk_id": "c1", "id": "c1", "keyword_score": 0.8,
+                    "doc_id": "", "text": "", "page": None, "topics": []}]
+        keyword = [{"chunk_id": "c1", "id": "c1", "keyword_score": 0.8,
                      "vector_score": 0.0, "graph_proximity_score": 0.0,
-                     "doc_id": "", "text": "", "page": None, "topics": []})]
+                     "doc_id": "", "text": "", "page": None, "topics": []}]
         graph = []
 
         results = _fuse_results(vector, keyword, graph, weights)
@@ -34,29 +42,28 @@ class TestScoreFusion:
         from app.core.search_service import _fuse_results
 
         weights = {"vector": 0.6, "keyword": 0.3, "graph": 0.1}
-        vector = [({"chunk_id": "c1", "id": "c1", "vector_score": 0.5,
+        vector = [{"chunk_id": "c1", "id": "c1", "vector_score": 0.5,
                     "keyword_score": 0.0, "graph_proximity_score": 0.0,
-                    "doc_id": "", "text": "", "page": None, "topics": []})]
-        keyword = [({"chunk_id": "c1", "id": "c1", "keyword_score": 0.8,
+                    "doc_id": "", "text": "", "page": None, "topics": []}]
+        keyword = [{"chunk_id": "c1", "id": "c1", "keyword_score": 0.8,
                      "vector_score": 0.0, "graph_proximity_score": 0.0,
-                     "doc_id": "", "text": "", "page": None, "topics": []})]
-        graph = [({"chunk_id": "c1", "id": "c1", "graph_proximity_score": 0.3,
+                     "doc_id": "", "text": "", "page": None, "topics": []}]
+        graph = [{"chunk_id": "c1", "id": "c1", "graph_proximity_score": 0.3,
                    "vector_score": 0.0, "keyword_score": 0.0,
-                   "doc_id": "", "text": "", "page": None, "topics": []})]
+                   "doc_id": "", "text": "", "page": None, "topics": []}]
 
         results = _fuse_results(vector, keyword, graph, weights)
-        expected = 0.6 * 0.5 + 0.3 * 0.8 + 0.1 * 0.3  # 0.3 + 0.24 + 0.03 = 0.57
+        expected = 0.6 * 0.5 + 0.3 * 0.8 + 0.1 * 0.3
         assert abs(results[0]["final_score"] - expected) < 1e-5
 
     def test_fuse_results_respects_limit(self):
         from app.core.search_service import _fuse_results
 
         weights = {"vector": 0.6, "keyword": 0.3, "graph": 0.1}
-        # 10 candidates
         vector = [{"chunk_id": f"c{i}", "id": f"c{i}", "vector_score": 0.9 - i * 0.05,
-                   "keyword_score": 0.0, "graph_proximity_score": 0.0,
-                   "doc_id": "", "text": "", "page": None, "topics": []}
-                  for i in range(10)]
+                    "keyword_score": 0.0, "graph_proximity_score": 0.0,
+                    "doc_id": "", "text": "", "page": None, "topics": []}
+                   for i in range(10)]
         keyword = []
         graph = []
 
@@ -67,23 +74,78 @@ class TestScoreFusion:
         from app.core.search_service import _fuse_results
 
         weights = {"vector": 0.6, "keyword": 0.3, "graph": 0.1}
-        # Only keyword channel has results; vector and graph return empty
         vector = []
-        keyword = [({"chunk_id": "c1", "id": "c1", "keyword_score": 0.7,
+        keyword = [{"chunk_id": "c1", "id": "c1", "keyword_score": 0.7,
                      "vector_score": 0.0, "graph_proximity_score": 0.0,
-                     "doc_id": "", "text": "", "page": None, "topics": []})]
+                     "doc_id": "", "text": "", "page": None, "topics": []}]
         graph = []
 
         results = _fuse_results(vector, keyword, graph, weights)
-        # final_score = 0.6*0 + 0.3*0.7 + 0.1*0 = 0.21
         assert abs(results[0]["final_score"] - 0.21) < 1e-5
+
+    def test_fuse_results_includes_keyword_only_hits(self):
+        from app.core.search_service import _fuse_results
+
+        weights = {"vector": 0.6, "keyword": 0.3, "graph": 0.1}
+        vector = [{"chunk_id": "c1", "id": "c1", "vector_score": 0.9,
+                    "doc_id": "d1", "text": "hello", "page": None, "topics": []}]
+        keyword = [{"chunk_id": "c1", "id": "c1", "keyword_score": 0.8,
+                     "doc_id": "", "text": "", "page": None, "topics": []},
+                    {"chunk_id": "c2", "id": "c2", "keyword_score": 0.7,
+                     "doc_id": "d2", "text": "world", "page": None, "topics": []}]
+        graph = []
+
+        results = _fuse_results(vector, keyword, graph, weights)
+        chunk_ids = {r["chunk_id"] for r in results}
+        assert "c2" in chunk_ids, "keyword-only hit c2 must be included"
+
+        c2 = next(r for r in results if r["chunk_id"] == "c2")
+        expected_c2 = 0.0 * 0.6 + 0.7 * 0.3 + 0.0 * 0.1
+        assert abs(c2["final_score"] - expected_c2) < 1e-5, "keyword-only final_score should be wk * keyword_score"
+
+    def test_fuse_results_includes_graph_only_hits(self):
+        from app.core.search_service import _fuse_results
+
+        weights = {"vector": 0.6, "keyword": 0.3, "graph": 0.1}
+        vector = []
+        keyword = []
+        graph = [{"chunk_id": "c3", "id": "c3", "graph_proximity_score": 0.5,
+                   "doc_id": "", "text": "", "page": None, "topics": []}]
+
+        results = _fuse_results(vector, keyword, graph, weights)
+        assert len(results) == 1, "graph-only hit should be included"
+
+        c3 = results[0]
+        expected_c3 = 0.0 * 0.6 + 0.0 * 0.3 + 0.5 * 0.1
+        assert abs(c3["final_score"] - expected_c3) < 1e-5, "graph-only final_score should be wg * graph_score"
+
+    def test_fuse_results_all_channels_empty(self):
+        from app.core.search_service import _fuse_results
+
+        weights = {"vector": 0.6, "keyword": 0.3, "graph": 0.1}
+        results = _fuse_results([], [], [], weights)
+        assert results == [], "all channels empty should return [], not raise"
+
+    def test_fuse_results_merges_highlights_from_keyword(self):
+        from app.core.search_service import _fuse_results
+
+        weights = {"vector": 0.6, "keyword": 0.3, "graph": 0.1}
+        vector = [{"chunk_id": "c1", "id": "c1", "vector_score": 0.9,
+                    "doc_id": "d1", "text": "hello world", "page": None, "topics": []}]
+        keyword = [{"chunk_id": "c1", "id": "c1", "keyword_score": 0.7,
+                     "highlights": ["hello"], "doc_id": "", "text": "",
+                     "page": None, "topics": []}]
+        graph = []
+
+        results = _fuse_results(vector, keyword, graph, weights)
+        assert len(results) == 1
+        assert "hello" in results[0]["highlights"], "keyword highlights should be merged into fused result"
 
 
 class TestBm25Normalization:
     """BM25 normalization — verify sigmoid mapping."""
 
     def test_sigmoid_zero_maps_to_zero(self):
-        # keyword_score = bm25 / (bm25 + 1.0)
         normalized = 0.0 / (0.0 + 1.0)
         assert normalized == 0.0
 
@@ -101,7 +163,6 @@ class TestBm25Normalization:
             assert n1 > n0, f"normalization should be monotonic: {window[0]}->{n0} vs {window[1]}->{n1}"
 
     def test_sigmoid_high_score_nears_one(self):
-        # Very high BM25 (e.g., 100.0) should normalize close to 1.0
         normalized = 100.0 / (100.0 + 1.0)
         assert normalized > 0.99, f"high score should be near 1.0, got {normalized}"
 
@@ -113,7 +174,6 @@ class TestChannelTimeouts:
     async def test_vector_timeout_still_returns_keyword_results(self):
         from app.core.search_service import _hybrid_3channel
 
-        # Patch vector to always timeout, keyword to return results
         with patch(
             "app.core.search_service._vector_channel",
             new_callable=AsyncMock,
@@ -131,7 +191,7 @@ class TestChannelTimeouts:
             new_callable=AsyncMock,
             return_value=[],
         ), patch(
-            "app.core.search_service.embed_query",
+            "app.core.search_service._get_embedding",
             new_callable=AsyncMock,
             return_value=[0.1] * 4,
         ):
@@ -163,7 +223,7 @@ class TestChannelTimeouts:
             new_callable=AsyncMock,
             return_value=[],
         ), patch(
-            "app.core.search_service.embed_query",
+            "app.core.search_service._get_embedding",
             new_callable=AsyncMock,
             return_value=[0.1] * 4,
         ):
@@ -175,32 +235,19 @@ class TestChannelTimeouts:
                 weights={"vector": 0.6, "keyword": 0.3, "graph": 0.1},
             )
 
-        # Empty list, NOT an exception
         assert results == [], "all channels empty should return [], not raise"
 
-
-class TestEmbedQueryUsed:
-    """Verify embed_query (not embed_texts) is used for search."""
-
     @pytest.mark.asyncio
-    async def test_hybrid_uses_embed_query_not_embed_texts(self):
+    async def test_keyword_timeout_still_returns_vector_and_graph(self):
         from app.core.search_service import _hybrid_3channel
-
-        embed_query_called = []
-        embed_texts_called = []
-
-        async def mock_embed_query(text):
-            embed_query_called.append(text)
-            return [0.1] * 4
-
-        async def mock_embed_texts(texts):
-            embed_texts_called.extend(texts)
-            return [[0.1] * 4]
 
         with patch(
             "app.core.search_service._vector_channel",
             new_callable=AsyncMock,
-            return_value=[],
+            return_value=[
+                {"chunk_id": "c1", "id": "c1", "vector_score": 0.9,
+                 "doc_id": "d1", "text": "hello", "page": None, "topics": []}
+            ],
         ), patch(
             "app.core.search_service._keyword_channel",
             new_callable=AsyncMock,
@@ -208,38 +255,153 @@ class TestEmbedQueryUsed:
         ), patch(
             "app.core.search_service._graph_channel",
             new_callable=AsyncMock,
-            return_value=[],
+            return_value=[
+                {"chunk_id": "c2", "id": "c2", "graph_proximity_score": 0.4,
+                 "doc_id": "", "text": "", "page": None, "topics": []}
+            ],
         ), patch(
-            "app.core.search_service.embed_query",
-            side_effect=mock_embed_query,
+            "app.core.search_service._get_embedding",
+            new_callable=AsyncMock,
+            return_value=[0.1] * 4,
         ):
-            await _hybrid_3channel(
-                query="my search query",
+            results = await _hybrid_3channel(
+                query="test query",
                 collection_ids=["col1"],
                 topics=None,
                 limit=20,
                 weights={"vector": 0.6, "keyword": 0.3, "graph": 0.1},
             )
 
-        assert "my search query" in embed_query_called, "embed_query should be called with the query string"
-        assert len(embed_texts_called) == 0, "embed_texts should NOT be called for search queries"
+        chunk_ids = {r["chunk_id"] for r in results}
+        assert "c1" in chunk_ids, "vector result should be present"
+        assert "c2" in chunk_ids, "graph result should be present even when keyword timed out"
+
+
+class TestEmbeddingCacheIntegration:
+    """Phase 4: _get_embedding checks Rust cache before calling embed_query."""
+
+    @pytest.mark.asyncio
+    async def test_get_embedding_checks_rust_cache_first(self):
+        from app.core.search_service import _get_embedding
+
+        mock_im = MagicMock()
+        mock_im.get_cached_embedding.return_value = '[0.1, 0.2, 0.3, 0.4]'
+
+        with patch(
+            "app.core.search_service.get_index_manager",
+            return_value=mock_im,
+        ), patch(
+            "app.core.search_service.embed_query",
+            new_callable=AsyncMock,
+            return_value=[0.5, 0.6, 0.7, 0.8],
+        ):
+            result = await _get_embedding("cached query")
+
+        assert result == [0.1, 0.2, 0.3, 0.4], "should return cached embedding, not call embed_query"
+        mock_im.get_cached_embedding.assert_called_once_with("cached query")
+
+    @pytest.mark.asyncio
+    async def test_get_embedding_calls_embed_query_on_cache_miss(self):
+        from app.core.search_service import _get_embedding
+
+        mock_im = MagicMock()
+        mock_im.get_cached_embedding.return_value = ""
+        mock_im.cache_embedding.return_value = True
+
+        with patch(
+            "app.core.search_service.get_index_manager",
+            return_value=mock_im,
+        ), patch(
+            "app.core.search_service.embed_query",
+            new_callable=AsyncMock,
+            return_value=[0.5, 0.6, 0.7, 0.8],
+        ):
+            result = await _get_embedding("uncached query")
+
+        assert result == [0.5, 0.6, 0.7, 0.8], "should return embed_query result on cache miss"
+        mock_im.get_cached_embedding.assert_called_once_with("uncached query")
+        mock_im.cache_embedding.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_get_embedding_handles_rust_unavailable(self):
+        from app.core.search_service import _get_embedding
+
+        with patch(
+            "app.core.search_service.get_index_manager",
+            return_value=None,
+        ), patch(
+            "app.core.search_service.embed_query",
+            new_callable=AsyncMock,
+            return_value=[0.5, 0.6, 0.7, 0.8],
+        ):
+            result = await _get_embedding("query without rust")
+
+        assert result == [0.5, 0.6, 0.7, 0.8], "should fall back to embed_query when Rust unavailable"
+
+
+class TestPostFilterByTopics:
+    """Phase 4: Topic post-filter for cross-channel consistency."""
+
+    def test_removes_results_with_no_topic_overlap(self):
+        from app.core.search_service import _post_filter_by_topics
+
+        results = [
+            {"chunk_id": "c1", "topics": ["contracts", "legal"]},
+            {"chunk_id": "c2", "topics": ["torts", "civil"]},
+            {"chunk_id": "c3", "topics": ["contracts", "criminal"]},
+        ]
+        filtered = _post_filter_by_topics(results, ["contracts"])
+        chunk_ids = {r["chunk_id"] for r in filtered}
+        assert "c1" in chunk_ids
+        assert "c3" in chunk_ids
+        assert "c2" not in chunk_ids, "c2 has no 'contracts' topic — should be removed"
+
+    def test_keeps_results_without_topics_field(self):
+        from app.core.search_service import _post_filter_by_topics
+
+        results = [
+            {"chunk_id": "c1", "topics": ["contracts"]},
+            {"chunk_id": "c2"},
+        ]
+        filtered = _post_filter_by_topics(results, ["contracts"])
+        assert len(filtered) == 2, "results without topics field should be kept (optimistic)"
+
+    def test_empty_topics_returns_all(self):
+        from app.core.search_service import _post_filter_by_topics
+
+        results = [
+            {"chunk_id": "c1", "topics": ["contracts"]},
+            {"chunk_id": "c2"},
+        ]
+        filtered = _post_filter_by_topics(results, [])
+        assert len(filtered) == 2, "empty topics list should not filter"
+
+    def test_case_insensitive_topic_matching(self):
+        from app.core.search_service import _post_filter_by_topics
+
+        results = [
+            {"chunk_id": "c1", "topics": ["Contracts", "LEGAL"]},
+        ]
+        filtered = _post_filter_by_topics(results, ["contracts"])
+        assert len(filtered) == 1, "topic matching should be case-insensitive"
 
 
 class TestHybridSearchModes:
     """Mode routing — hybrid, vector, keyword, graph modes."""
 
     @pytest.mark.asyncio
-    async def test_mode_vector_uses_embed_query(self):
+    async def test_mode_vector_uses_get_embedding(self):
         from app.core.search_service import _vector_only
 
-        embed_query_called = []
-        async def mock_embed_query(text):
-            embed_query_called.append(text)
+        get_embedding_called = []
+
+        async def mock_get_embedding(text):
+            get_embedding_called.append(text)
             return [0.1] * 4
 
         with patch(
-            "app.core.search_service.embed_query",
-            side_effect=mock_embed_query,
+            "app.core.search_service._get_embedding",
+            side_effect=mock_get_embedding,
         ), patch(
             "app.db.lancedb_client.vector_search",
             new_callable=AsyncMock,
@@ -247,21 +409,21 @@ class TestHybridSearchModes:
         ):
             await _vector_only("test query", ["col1"], None, 20)
 
-        assert "test query" in embed_query_called
+        assert "test query" in get_embedding_called
 
     @pytest.mark.asyncio
-    async def test_mode_graph_uses_embed_query(self):
+    async def test_mode_graph_uses_get_embedding(self):
         from app.core.search_service import _graph_only
 
-        embed_query_called = []
+        get_embedding_called = []
 
-        async def mock_embed_query(text):
-            embed_query_called.append(text)
+        async def mock_get_embedding(text):
+            get_embedding_called.append(text)
             return [0.1] * 4
 
         with patch(
-            "app.core.search_service.embed_query",
-            side_effect=mock_embed_query,
+            "app.core.search_service._get_embedding",
+            side_effect=mock_get_embedding,
         ), patch(
             "app.core.rust_bridge.rust_bfs_proximity_async",
             new_callable=AsyncMock,
@@ -269,4 +431,43 @@ class TestHybridSearchModes:
         ):
             await _graph_only("test query", ["col1"], 20)
 
-        assert "test query" in embed_query_called
+        assert "test query" in get_embedding_called
+
+    @pytest.mark.asyncio
+    async def test_mode_hybrid_applies_topic_filter(self):
+        from app.core.search_service import _hybrid_3channel
+
+        with patch(
+            "app.core.search_service._vector_channel",
+            new_callable=AsyncMock,
+            return_value=[
+                {"chunk_id": "c1", "vector_score": 0.9, "doc_id": "d1", "text": "",
+                 "page": None, "topics": ["contracts"]},
+            ],
+        ), patch(
+            "app.core.search_service._keyword_channel",
+            new_callable=AsyncMock,
+            return_value=[
+                {"chunk_id": "c2", "keyword_score": 0.7, "doc_id": "", "text": "",
+                 "page": None, "topics": ["torts"]},
+            ],
+        ), patch(
+            "app.core.search_service._graph_channel",
+            new_callable=AsyncMock,
+            return_value=[],
+        ), patch(
+            "app.core.search_service._get_embedding",
+            new_callable=AsyncMock,
+            return_value=[0.1] * 4,
+        ):
+            results = await _hybrid_3channel(
+                query="test",
+                collection_ids=["col1"],
+                topics=["contracts"],
+                limit=20,
+                weights={"vector": 0.6, "keyword": 0.3, "graph": 0.1},
+            )
+
+        chunk_ids = {r["chunk_id"] for r in results}
+        assert "c1" in chunk_ids, "c1 has 'contracts' topic — should be kept"
+        assert "c2" not in chunk_ids, "c2 has 'torts' not 'contracts' — should be filtered out"

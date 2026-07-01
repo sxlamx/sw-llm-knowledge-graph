@@ -19,7 +19,7 @@ pub mod wal;
 use index_manager::IndexManager;
 use models::*;
 use ingestion::{FileScanner, DocumentExtractor, Chunker, FileEntry, FileType};
-use graph::{export_graphml, export_json, EntityResolver, Resolution, MergeStrategy, bfs_subgraph};
+use graph::{export_graphml, export_json, EntityResolver, Resolution, MergeStrategy, bfs_subgraph, KeyCompiler};
 use ontology::{Ontology, OntologyValidator};
 
 #[pyclass]
@@ -347,6 +347,22 @@ pub fn get_bfs_subgraph(graph_json: &str, start_id: &str, max_hops: u32, min_wei
 }
 
 #[pyfunction]
+pub fn compile_key(pattern: &str, fields_json: &str) -> PyResult<String> {
+    let compiler = KeyCompiler::new(pattern);
+    let fields: HashMap<String, String> = serde_json::from_str(fields_json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(compiler.render(&fields))
+}
+
+#[pyfunction]
+pub fn compile_label(pattern: &str, fields_json: &str) -> PyResult<String> {
+    let compiler = KeyCompiler::new(pattern);
+    let fields: HashMap<String, String> = serde_json::from_str(fields_json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(compiler.render_label(&fields))
+}
+
+#[pyfunction]
 pub fn export_graph(graph_json: &str, format: &str) -> PyResult<String> {
     let sg: SerializableGraph = serde_json::from_str(graph_json)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
@@ -369,7 +385,7 @@ pub fn export_graph(graph_json: &str, format: &str) -> PyResult<String> {
 #[pymodule]
 fn rust_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     use tracing_subscriber::{fmt, EnvFilter};
-    fmt().with_env_filter(EnvFilter::from_default_env()).init();
+    let _ = fmt().with_env_filter(EnvFilter::from_default_env()).try_init();
 
     m.add_class::<IndexManager>()?;
     m.add_class::<PySearchEngine>()?;
@@ -382,5 +398,7 @@ fn rust_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(check_shortest_path, m)?)?;
     m.add_function(wrap_pyfunction!(get_bfs_subgraph, m)?)?;
     m.add_function(wrap_pyfunction!(export_graph, m)?)?;
+    m.add_function(wrap_pyfunction!(compile_key, m)?)?;
+    m.add_function(wrap_pyfunction!(compile_label, m)?)?;
     Ok(())
 }

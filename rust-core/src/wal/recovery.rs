@@ -7,13 +7,94 @@
 //!      in-memory KnowledgeGraph.
 //!
 //! If the WAL file does not exist or is empty, the function returns `Ok(vec![])`.
+//!
+//! Each WAL entry is expected to contain `sequence` (u64) and `timestamp` (u64)
+//! fields injected by `WalWriter::append`. The recovery functions parse these
+//! fields to return `WalEntry` structs with proper ordering information.
 
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-/// Read every JSON-encoded line from `path` and return them in order.
+/// A single WAL entry with sequence number and timestamp.
+#[derive(Debug, Clone)]
+pub struct WalEntry {
+    pub sequence: u64,
+    pub timestamp: u64,
+    pub operation: serde_json::Value,
+}
+
+/// Read every JSON-encoded line from `path`, parse each into a `WalEntry`
+/// containing `sequence`, `timestamp`, and the full operation payload.
 ///
-/// Lines that are empty or consist only of whitespace are skipped.
+/// Lines that are empty, consist only of whitespace, or fail JSON parse are
+/// skipped.
+/// Does NOT truncate — the caller must call `truncate_wal` after successful
+/// replay to complete the checkpoint.
+pub fn read_wal_for_recovery(path: &Path) -> Result<Vec<WalEntry>, std::io::Error> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let file = std::fs::File::open(path)?;
+    let reader = BufReader::new(file);
+
+    let mut entries = Vec::new();
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        let trimmed = line.trim().to_string();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = match serde_json::from_str(&trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let sequence = value.get("sequence")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let timestamp = value.get("timestamp")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        entries.push(WalEntry {
+            sequence,
+            timestamp,
+            operation: value,
+        });
+    }
+
+    entries.sort_by_key(|e| e.sequence);
+    Ok(entries)
+}
+
+/// Truncate the WAL file to zero bytes, leaving it in place.
+pub fn truncate_wal(path: &Path) -> Result<(), std::io::Error> {
+    let tmp_path = path.with_extension("wal.tmp");
+    {
+        let f = std::fs::File::create(&tmp_path)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+/// Legacy API retained for backwards compatibility.
+///
+/// Prefer `read_wal_for_recovery` + explicit `truncate_wal` after
+/// successful replay so that a crash during replay doesn't lose WAL
+/// entries.
+pub fn checkpoint_on_startup(path: &Path) -> Result<Vec<String>, std::io::Error> {
+    let entries = replay_wal(path)?;
+    if !entries.is_empty() {
+        truncate_wal(path)?;
+    }
+    Ok(entries)
+}
+
 pub fn replay_wal(path: &Path) -> Result<Vec<String>, std::io::Error> {
     if !path.exists() {
         return Ok(Vec::new());
@@ -30,30 +111,9 @@ pub fn replay_wal(path: &Path) -> Result<Vec<String>, std::io::Error> {
                 if trimmed.is_empty() { None } else { Some(trimmed) }
             })
         })
+        .filter(|line| serde_json::from_str::<serde_json::Value>(line).is_ok())
         .collect();
 
-    Ok(entries)
-}
-
-/// Truncate the WAL file to zero bytes, leaving it in place.
-pub fn truncate_wal(path: &Path) -> Result<(), std::io::Error> {
-    // O_TRUNC via File::create
-    std::fs::File::create(path)?;
-    Ok(())
-}
-
-/// Atomically checkpoint the WAL at `path`:
-///   1. Replay (read) all entries.
-///   2. Truncate so the WAL starts fresh.
-///   3. Return the entries for the caller to replay into the graph.
-///
-/// This is the canonical startup procedure described in the spec:
-/// "WAL checkpoint on startup: truncate after successful recovery."
-pub fn checkpoint_on_startup(path: &Path) -> Result<Vec<String>, std::io::Error> {
-    let entries = replay_wal(path)?;
-    if !entries.is_empty() {
-        truncate_wal(path)?;
-    }
     Ok(entries)
 }
 

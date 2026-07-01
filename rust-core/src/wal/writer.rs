@@ -4,7 +4,8 @@
 //! The WAL is used to replay graph updates after an unclean shutdown.
 //!
 //! Design:
-//!   - `WalWriter::append(entry)` fsync-writes one JSON line.
+//!   - `WalWriter::append(entry)` fsync-writes one JSON line with an added
+//!     `sequence` and `timestamp` field for crash-recovery ordering.
 //!   - `WalWriter::truncate()` replaces the file with an empty one after a
 //!     successful checkpoint (called once at startup by `checkpoint_on_startup`).
 //!   - The sequence counter counts committed entries; it is re-derived from the
@@ -12,6 +13,7 @@
 
 use std::io::{BufWriter, Write};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct WalWriter {
     path: std::path::PathBuf,
@@ -42,13 +44,30 @@ impl WalWriter {
     /// Append a JSON-encoded entry to the WAL, flushing to disk.
     ///
     /// `entry` must be a valid single-line JSON value (no embedded newlines).
+    /// Adds `sequence` and `timestamp` fields to the entry before writing.
     pub fn append(&mut self, entry: &str) -> std::io::Result<()> {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let seq = self.sequence;
+
+        let enriched = if let Ok(mut obj) = serde_json::from_str::<serde_json::Value>(entry) {
+            if let Some(map) = obj.as_object_mut() {
+                map.insert("sequence".to_string(), serde_json::json!(seq));
+                map.insert("timestamp".to_string(), serde_json::json!(ts));
+            }
+            serde_json::to_string(&obj).unwrap_or_else(|_| entry.to_string())
+        } else {
+            format!(r#"{{"sequence":{},"timestamp":{},"data":{}}}"#, seq, ts, entry)
+        };
+
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)?;
         let mut writer = BufWriter::new(file);
-        writer.write_all(entry.as_bytes())?;
+        writer.write_all(enriched.as_bytes())?;
         writer.write_all(b"\n")?;
         writer.flush()?;
         // fsync for durability guarantees
@@ -60,7 +79,12 @@ impl WalWriter {
     /// Atomically truncate the WAL (replace with an empty file).
     /// Called after a successful checkpoint so the WAL does not grow unbounded.
     pub fn truncate(&mut self) -> std::io::Result<()> {
-        std::fs::File::create(&self.path)?;
+        let tmp_path = self.path.with_extension("wal.tmp");
+        {
+            let f = std::fs::File::create(&tmp_path)?;
+            f.sync_all()?;
+        }
+        std::fs::rename(&tmp_path, &self.path)?;
         self.sequence = 0;
         Ok(())
     }

@@ -146,45 +146,43 @@ impl OntologyValidator {
             .map(|e| (e.name.clone(), e.entity_type.clone()))
             .collect();
 
-        let mut valid_relationships = Vec::new();
-        let mut dropped_relationships = Vec::new();
+        let ontology = &self.ontology;
 
-        for rel in relationships {
-            if !self.ontology.relationship_types.contains_key(&rel.predicate) {
-                let predicate = rel.predicate.clone();
-                dropped_relationships.push((
-                    rel,
-                    ValidationError::UnknownRelationshipType { predicate },
-                ));
-                continue;
-            }
+        let (valid_relationships, dropped_relationships): (Vec<_>, Vec<_>) = relationships
+            .into_par_iter()
+            .map(|rel| {
+                if !ontology.relationship_types.contains_key(&rel.predicate) {
+                    let predicate = rel.predicate.clone();
+                    return Err((rel, ValidationError::UnknownRelationshipType { predicate }));
+                }
 
-            let source_type = entity_type_map.get(&rel.source).cloned();
-            let target_type = entity_type_map.get(&rel.target).cloned();
+                let source_type = entity_type_map.get(&rel.source).cloned();
+                let target_type = entity_type_map.get(&rel.target).cloned();
 
-            if source_type.is_none() || target_type.is_none() {
-                let predicate = rel.predicate.clone();
-                let source = source_type.unwrap_or_else(|| "unknown".to_string());
-                dropped_relationships.push((
-                    rel,
-                    ValidationError::InvalidDomain {
+                if source_type.is_none() || target_type.is_none() {
+                    let predicate = rel.predicate.clone();
+                    let source = source_type.unwrap_or_else(|| "unknown".to_string());
+                    return Err((rel, ValidationError::InvalidDomain {
                         predicate,
                         source_type: source,
-                    },
-                ));
-                continue;
-            }
+                    }));
+                }
 
-            let source_type = source_type.unwrap();
-            let target_type = target_type.unwrap();
+                let source_type = source_type.unwrap();
+                let target_type = target_type.unwrap();
 
-            if let Err(e) = DomainRangeRule::check_rel(&rel, &source_type, &target_type, &self.ontology) {
-                dropped_relationships.push((rel, e));
-                continue;
-            }
+                if let Err(e) = DomainRangeRule::check_rel(&rel, &source_type, &target_type, ontology) {
+                    return Err((rel, e));
+                }
 
-            valid_relationships.push(rel);
-        }
+                Ok(rel)
+            })
+            .partition(Result::is_ok);
+
+        let valid_relationships: Vec<ExtractedRelationship> =
+            valid_relationships.into_iter().filter_map(Result::ok).collect();
+        let dropped_relationships: Vec<(ExtractedRelationship, ValidationError)> =
+            dropped_relationships.into_iter().filter_map(Result::err).collect();
 
         ValidationReport {
             valid_entities,

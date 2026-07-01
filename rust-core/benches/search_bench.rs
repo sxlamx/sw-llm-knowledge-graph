@@ -1,16 +1,20 @@
-//! search_bench — Phase 3 Criterion benchmarks for search-critical paths.
+//! search_bench — Phase 3+4 Criterion benchmarks for search-critical paths.
 //!
 //! Benchmarks:
 //!   - `bfs_reachable`   : BFS on a synthetic 1 000-node / 5 000-edge graph.
 //!   - `score_fusion`    : 3-channel score fusion across 500 candidate IDs.
 //!   - `ontology_validate`: Rayon-parallel entity validation (100 entities).
 //!   - `graph_prune`     : Edge pruning on a dense 500-node graph.
+//!   - [Phase 4] `bm25_normalization` : Sigmoid normalization throughput.
+//!   - [Phase 4] `graph_proximity_score` : Chunk proximity computation.
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use rand::{rngs::SmallRng, Rng, SeedableRng};
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
 use rust_core::graph::traversal::bfs_reachable;
 use rust_core::models::{EdgeType, ExtractedEntity, GraphEdge, GraphNode, KnowledgeGraph, NodeType};
 use rust_core::ontology::{Ontology, OntologyValidator};
+use rust_core::storage::normalize_bm25_score;
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -29,6 +33,9 @@ fn make_node(cid: Uuid) -> GraphNode {
         ontology_class: None,
         properties: HashMap::new(),
         collection_id: cid,
+        display_label: None,
+        dedup_key: None,
+        doc_origins: vec![],
         created_at: None,
         updated_at: None,
     }
@@ -45,6 +52,13 @@ fn make_edge(src: Uuid, tgt: Uuid, cid: Uuid, weight: f32) -> GraphEdge {
         chunk_id: None,
         properties: HashMap::new(),
         collection_id: cid,
+        display_label: None,
+        dedup_key: None,
+        predicate: String::new(),
+        time: None,
+        location: None,
+        participants: None,
+        doc_origins: vec![],
     }
 }
 
@@ -131,13 +145,16 @@ fn bench_score_fusion(c: &mut Criterion) {
         b.iter(|| {
             let mut scores: HashMap<String, f32> = HashMap::with_capacity(N);
             for (id, s) in black_box(&vector) {
-                *scores.entry(id.clone()).or_default() += s * 0.6;
+                let entry = scores.entry(id.clone()).or_insert(0.0f32);
+                *entry += s * 0.6f32;
             }
             for (id, s) in black_box(&keyword) {
-                *scores.entry(id.clone()).or_default() += s * 0.3;
+                let entry = scores.entry(id.clone()).or_insert(0.0f32);
+                *entry += s * 0.3f32;
             }
             for (id, s) in black_box(&graph) {
-                *scores.entry(id.clone()).or_default() += s * 0.1;
+                let entry = scores.entry(id.clone()).or_insert(0.0f32);
+                *entry += s * 0.1f32;
             }
             scores.len()
         })
@@ -182,6 +199,47 @@ criterion_group!(
     bench_bfs,
     bench_score_fusion,
     bench_ontology_validate,
-    bench_graph_prune
+    bench_graph_prune,
+    bench_bm25_normalization,
+    bench_graph_proximity_scoring
 );
 criterion_main!(benches);
+
+// ---------------------------------------------------------------------------
+// Phase 4 — BM25 normalization throughput
+// ---------------------------------------------------------------------------
+
+fn bench_bm25_normalization(c: &mut Criterion) {
+    let scores: Vec<f32> = (0..10_000).map(|i| (i as f32) * 0.01).collect();
+    c.bench_function("bm25_normalization_10k_scores", |b| {
+        b.iter(|| {
+            let normalized: Vec<f32> = black_box(&scores).iter().map(|&s| normalize_bm25_score(s)).collect();
+            black_box(normalized.len())
+        })
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 — Graph proximity chunk scoring
+// ---------------------------------------------------------------------------
+
+fn bench_graph_proximity_scoring(c: &mut Criterion) {
+    let (kg, ids) = build_graph(200, 1000);
+    let seeds = vec![ids[0]];
+
+    c.bench_function("graph_proximity_scoring_200_nodes", |b| {
+        b.iter(|| {
+            let reachable = bfs_reachable(black_box(&kg), &seeds, 2, 0.0);
+            let mut chunk_scores: HashMap<uuid::Uuid, f32> = HashMap::new();
+            for edge in kg.edges.values() {
+                if reachable.contains(&edge.source) {
+                    if let Some(chunk_id) = edge.chunk_id {
+                        let score = 1.0 / (1.0 + 1.0);
+                        chunk_scores.insert(chunk_id, score);
+                    }
+                }
+            }
+            black_box(chunk_scores.len())
+        })
+    });
+}
