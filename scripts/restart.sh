@@ -18,8 +18,8 @@ kill_port() {
   fi
 }
 
-kill_port 8000  # FastAPI / uvicorn
-kill_port 5333  # Vite dev server
+kill_port 8342  # FastAPI / uvicorn
+kill_port 5342  # Vite dev server
 
 # Also kill any lingering uvicorn / vite processes by name
 pkill -f "uvicorn app.main:app" 2>/dev/null && echo "[restart]   killed uvicorn" || true

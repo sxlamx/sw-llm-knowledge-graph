@@ -18,7 +18,7 @@ for arg in "$@"; do
 done
 
 # ── export .env vars safely (skip lines with special shell chars like JSON arrays) ──
-ENV_FILE="$ROOT/.env"
+ENV_FILE="$ROOT/deployment-dev/env/.env"
 if [[ -f "$ENV_FILE" ]]; then
   while IFS= read -r line || [[ -n "$line" ]]; do
     # Skip comments and blank lines
@@ -48,7 +48,7 @@ trap cleanup EXIT INT TERM
 
 # ── backend ────────────────────────────────────────────────────────────────
 if [[ $RUN_BACKEND -eq 1 ]]; then
-  echo "[dev] starting backend on http://localhost:8333"
+  echo "[dev] starting backend on http://localhost:8342"
 
   # Resolve the venv's uvicorn binary directly so subshells inherit the right Python
   if [[ -f "$API_DIR/.venv/bin/uvicorn" ]]; then
@@ -67,7 +67,7 @@ if [[ $RUN_BACKEND -eq 1 ]]; then
     cd "$API_DIR"
     "$UVICORN" app.main:app \
       --host 0.0.0.0 \
-      --port 8333 \
+      --port 8342 \
       --reload \
       --reload-dir app \
       2>&1 | sed 's/^/[api] /'
@@ -77,7 +77,7 @@ fi
 
 # ── frontend ───────────────────────────────────────────────────────────────
 if [[ $RUN_FRONTEND -eq 1 ]]; then
-  echo "[dev] starting frontend on http://localhost:5333"
+  echo "[dev] starting frontend on http://localhost:5342"
 
   # Install deps if node_modules is missing
   if [[ ! -d "$FE_DIR/node_modules" ]]; then
@@ -94,9 +94,9 @@ fi
 
 # ── wait ───────────────────────────────────────────────────────────────────
 echo ""
-echo "  Backend  →  http://localhost:8333"
-echo "  Frontend →  http://localhost:5333"
-echo "  API docs →  http://localhost:8333/docs"
+echo "  Backend  →  http://localhost:8342"
+echo "  Frontend →  http://localhost:5342"
+echo "  API docs →  http://localhost:8342/docs"
 echo ""
 echo "  Press Ctrl+C to stop both."
 echo ""
