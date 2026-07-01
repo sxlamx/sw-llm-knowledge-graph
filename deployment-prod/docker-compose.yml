@@ -4,12 +4,13 @@ version: "3.9"
 # Knowledge Graph Builder — production Docker Compose
 #
 # Quick start:
-#   cp .env.example .env          # fill in API keys and secrets
+#   cp deployment-prod/env/.env.example deployment-prod/env/.env
+#   cp deployment-prod/env/.env.frontend.example deployment-prod/env/.env.frontend
 #   bash scripts/generate_jwt_keys.sh
-#   docker compose up --build -d
+#   bash deployment-prod/scripts/build.sh
+#   bash deployment-prod/scripts/start.sh
 #
 # Services  : python-api (8009) · frontend (5342)
-# Volumes   : lancedb_data · documents
 # ---------------------------------------------------------------------------
 
 services:
@@ -19,7 +20,7 @@ services:
   # --------------------------------------------------------------------------
   python-api:
     build:
-      context: .
+      context: ../..
       dockerfile: docker/Dockerfile.api
     image: kg-api:latest
     restart: unless-stopped
@@ -28,7 +29,7 @@ services:
     volumes:
       - lancedb_data:/data/lancedb
       - documents:/data/documents
-      - ./secrets:/run/secrets:ro
+      - ../../secrets:/run/secrets:ro
     environment:
       # LLM (Ollama Cloud)
       OLLAMA_CLOUD_BASE_URL: ${OLLAMA_CLOUD_BASE_URL:-https://api.ollama.com/v1}
@@ -37,8 +38,8 @@ services:
       # Embeddings (local Ollama reachable from container)
       OLLAMA_EMBED_BASE_URL: ${OLLAMA_EMBED_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-qwen3-embedding}
-      OLLAMA_EMBED_DIMENSIONS: ${OLLAMA_EMBED_DIMENSIONS:-1536}
-      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1536}
+      OLLAMA_EMBED_DIMENSIONS: ${OLLAMA_EMBED_DIMENSIONS:-1024}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1024}
       # Storage
       LANCEDB_PATH: /data/lancedb
       DOCUMENTS_PATH: /data/documents
@@ -53,6 +54,8 @@ services:
       JWT_REFRESH_EXPIRY_DAYS: ${JWT_REFRESH_EXPIRY_DAYS:-7}
       # CORS
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5342}
+      # Cookie security
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
       # Multimodal (PDF image extraction)
       VISION_MODEL: ${VISION_MODEL:-gpt-4o-mini}
       VISION_ENABLED: ${VISION_ENABLED:-true}
@@ -78,7 +81,7 @@ services:
   # --------------------------------------------------------------------------
   frontend:
     build:
-      context: .
+      context: ../..
       dockerfile: docker/Dockerfile.frontend
       args:
         VITE_API_BASE_URL: /api/v1

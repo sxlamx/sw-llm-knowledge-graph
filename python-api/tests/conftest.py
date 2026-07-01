@@ -58,6 +58,7 @@ def mock_settings(monkeypatch):
     monkeypatch.setattr("app.pipeline.ingest_worker.settings", test_settings)
     monkeypatch.setattr("app.auth.google.settings", test_settings)
     monkeypatch.setattr("app.auth.middleware.settings", test_settings)
+    monkeypatch.setattr("app.pipeline.topic_worker.settings", test_settings)
     return test_settings
 
 

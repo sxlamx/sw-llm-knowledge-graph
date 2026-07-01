@@ -29,6 +29,7 @@ from app.services.template_factory import TemplateFactory, _compile_key_pattern
 from app.services.template_gallery import TemplateGallery
 from app.core.pdf_extractor import extract_text_smart
 from app.pipeline.job_manager import get_job_manager
+from app.pipeline.topic_worker import _run_topic_extraction_pass
 from app.models.schemas import IngestOptions
 
 settings = get_settings()
@@ -350,6 +351,10 @@ async def run_ingest_pipeline(
     # ── NER pass (background, after ingest marked completed) ─────────────
     asyncio.create_task(_run_ner_pass(collection_id, job_id))
     remove_tracker(job_id)
+
+    # ── Topic extraction pass (background, config-gated) ──────────────────
+    if settings.enable_topic_extraction:
+        asyncio.create_task(_run_topic_extraction_pass(collection_id, job_id))
 
 
 async def flush_chunks(

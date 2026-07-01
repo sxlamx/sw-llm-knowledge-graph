@@ -64,6 +64,12 @@ class Settings(BaseSettings):
 
     first_user_admin: bool = True
 
+    # Topic extraction pipeline (LLM-based, optional)
+    enable_topic_extraction: bool = False
+    topic_extraction_model: str = ""
+    topic_batch_size: int = 200
+    topic_extraction_concurrency: int = 10
+
     # Rate limiting
     rate_limit_per_user: int = 60
     rate_limit_window_seconds: int = 60

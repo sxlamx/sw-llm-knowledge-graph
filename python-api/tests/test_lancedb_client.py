@@ -151,7 +151,11 @@ class TestCreateOrUpdateUser:
             from app.db.lancedb_client import create_or_update_user
             uid = await create_or_update_user(user.copy())
         assert uid == "u1"
-        tbl.update.assert_called_once()
+        # Implementation deletes the existing row and re-adds the updated record
+        tbl.delete.assert_called_once()
+        tbl.add.assert_called_once()
+        added = tbl.add.call_args.args[0]
+        assert added[0]["email"] == "new@b.com"
 
 
 # ---------------------------------------------------------------------------

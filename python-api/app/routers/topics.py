@@ -51,6 +51,7 @@ async def list_topics_endpoint(
             name=r.get("name", ""),
             node_count=r.get("node_count", 0),
             chunk_count=r.get("chunk_count", 0),
+            keywords=r.get("keywords") or [],
         )
         for r in rows
     ]

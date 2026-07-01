@@ -19,6 +19,14 @@ dist/
 venv/
 env/
 .env
+
+# Deployment env folders — track examples, ignore live credential files
+!deployment-dev/env/
+!deployment-prod/env/
+deployment-dev/env/.env
+deployment-dev/env/.env.frontend
+deployment-prod/env/.env
+deployment-prod/env/.env.frontend
 .mypy_cache/
 .pytest_cache/
 .coverage
